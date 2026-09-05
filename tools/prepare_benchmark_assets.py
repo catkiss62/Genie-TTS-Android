@@ -7,6 +7,7 @@ import argparse
 import gc
 import json
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -89,21 +90,25 @@ def fixtures(cache: Path, output: Path) -> None:
     (output / "fixture_metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def inject_fp16_weights(model_path: Path, weights_path: Path):
+def redirect_fp16_weights(model_path: Path, weights_path: Path, target_weights: Path):
     import onnx
     model = onnx.load(model_path, load_external_data=False)
-    fp32_bytes = np.fromfile(weights_path, dtype=np.float16).astype(np.float32).tobytes()
+    fp32 = np.fromfile(weights_path, dtype=np.float16).astype(np.float32)
+    if not target_weights.exists():
+        fp32.tofile(target_weights)
+    fp32_size = fp32.nbytes
+    del fp32
     for tensor in model.graph.initializer:
         if tensor.data_location != onnx.TensorProto.EXTERNAL:
             continue
         entries = {entry.key: entry.value for entry in tensor.external_data}
         offset = int(entries.get("offset", 0))
         length = int(entries.get("length", 0))
-        if offset + length > len(fp32_bytes):
+        if offset + length > fp32_size:
             raise ValueError(f"External tensor {tensor.name} exceeds {weights_path.name}")
-        tensor.raw_data = fp32_bytes[offset:offset + length]
-        del tensor.external_data[:]
-        tensor.data_location = onnx.TensorProto.DEFAULT
+        for entry in tensor.external_data:
+            if entry.key == "location":
+                entry.value = target_weights.name
     return model
 
 
@@ -113,18 +118,22 @@ def models(cache: Path, output: Path) -> None:
     target = output / "models"
     target.mkdir(parents=True, exist_ok=True)
 
-    encoder = onnx.load(source / "t2s_encoder_fp32.onnx", load_external_data=True)
+    encoder = onnx.load(source / "t2s_encoder_fp32.onnx", load_external_data=False)
+    for tensor in encoder.graph.initializer:
+        for entry in tensor.external_data:
+            if entry.key == "location":
+                entry.value = "t2s_encoder_fp32.bin"
     onnx.save_model(encoder, target / "t2s_encoder.onnx")
-    del encoder
-    gc.collect()
+    shutil.copyfile(source / "t2s_encoder_fp32.bin", target / "t2s_encoder_fp32.bin")
+    del encoder; gc.collect()
 
     conversions = [
-        ("t2s_first_stage_decoder_fp32.onnx", "t2s_shared_fp16.bin", "t2s_first_stage_decoder.onnx"),
-        ("t2s_stage_decoder_fp32.onnx", "t2s_shared_fp16.bin", "t2s_stage_decoder.onnx"),
-        ("vits_fp32.onnx", "vits_fp16.bin", "vits.onnx"),
+        ("t2s_first_stage_decoder_fp32.onnx", "t2s_shared_fp16.bin", "t2s_shared_fp32.bin", "t2s_first_stage_decoder.onnx"),
+        ("t2s_stage_decoder_fp32.onnx", "t2s_shared_fp16.bin", "t2s_shared_fp32.bin", "t2s_stage_decoder.onnx"),
+        ("vits_fp32.onnx", "vits_fp16.bin", "vits_fp32.bin", "vits.onnx"),
     ]
-    for model_name, weight_name, output_name in conversions:
-        model = inject_fp16_weights(source / model_name, source / weight_name)
+    for model_name, weight_name, target_weight_name, output_name in conversions:
+        model = redirect_fp16_weights(source / model_name, source / weight_name, target / target_weight_name)
         onnx.save_model(model, target / output_name)
         del model
         gc.collect()
