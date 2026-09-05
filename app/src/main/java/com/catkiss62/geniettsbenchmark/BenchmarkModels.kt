@@ -50,7 +50,7 @@ data class BenchmarkResult(
     val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String): String = buildString {
-        appendLine("Genie-TTS Android Benchmark v0.1.0")
+        appendLine("Genie-TTS Android Benchmark v0.1.1")
         appendLine(deviceLine)
         appendLine("测试：$caseTitle")
         appendLine("文本：$text")
@@ -66,4 +66,3 @@ data class BenchmarkResult(
         appendLine("PSS：约 $pssMb MB")
     }
 }
-
