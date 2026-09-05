@@ -46,16 +46,18 @@ jobs:
         run: python tools/prepare_benchmark_assets.py models
       - name: Finalize benchmark manifest
         run: python tools/prepare_benchmark_assets.py finish
+      - name: Smoke-test complete Genie inference
+        run: python tools/prepare_benchmark_assets.py smoke
       - name: Show bundled sizes
         run: du -h app/src/main/assets/benchmark/models/* app/src/main/assets/benchmark
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Genie-TTS-Android-Benchmark-v0.1.0.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk Genie-TTS-Android-Benchmark-v0.1.1.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Genie-TTS-Android-Benchmark-v0.1.0
-          path: Genie-TTS-Android-Benchmark-v0.1.0.apk
+          name: Genie-TTS-Android-Benchmark-v0.1.1
+          path: Genie-TTS-Android-Benchmark-v0.1.1.apk
           retention-days: 3
           compression-level: 6
