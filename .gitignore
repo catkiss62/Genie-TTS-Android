@@ -1,0 +1,8 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+app/src/main/assets/benchmark/
+tools/.cache/
+__pycache__/
+*.py[cod]
