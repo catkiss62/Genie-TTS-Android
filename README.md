@@ -4,7 +4,7 @@
 
 第一阶段只回答一个问题：GPT-SoVITS 经 Genie 转换后的 ONNX 推理，在手机 CPU 上能否达到实时速度。
 
-## v0.1.0 范围
+## v0.1.1 范围
 
 - 官方 Genie-TTS `v2.0.2`
 - 官方预定义中文角色“菲比” (`V2ProPlus`)
@@ -12,6 +12,9 @@
 - 固定短句、中句、长句三组基准
 - 记录模型加载、Encoder、逐 Token Decoder、VITS、音频时长、RTF 与 PSS
 - 生成完成后直接播放结果
+- 修复 Stage Decoder 第二轮把布尔停止标记误传给浮点缓存输入的问题
+- 失败日志也可通过“复制测试报告”直接复制
+- GitHub Actions 构建时完整运行一次短句推理冒烟测试
 
 参考音频特征、G2P 与中文 BERT 特征由 GitHub Actions 在构建时预计算。手机执行的 Encoder、首步 Decoder、自回归 Decoder 和 VITS 均为真实 Genie 模型，并非录音回放。
 
