@@ -163,9 +163,56 @@ def finish(output: Path) -> None:
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def smoke(output: Path) -> None:
+    """Run one complete fixed-text inference to reject broken benchmark bundles."""
+    import onnxruntime as ort
+
+    metadata = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+
+    def read_tensor(spec: dict) -> np.ndarray:
+        dtype = {"float32": np.float32, "int64": np.int64}[spec["dtype"]]
+        return np.fromfile(output / spec["file"], dtype=dtype).reshape(spec["shape"])
+
+    case = metadata["cases"][0]
+    fixtures = {
+        spec["name"]: read_tensor(spec)
+        for spec in [*metadata["shared_tensors"], *case["tensors"]]
+    }
+    model_paths = metadata["models"]
+    encoder = ort.InferenceSession(str(output / model_paths["encoder"]), providers=["CPUExecutionProvider"])
+    first_decoder = ort.InferenceSession(str(output / model_paths["first_decoder"]), providers=["CPUExecutionProvider"])
+    stage_decoder = ort.InferenceSession(str(output / model_paths["stage_decoder"]), providers=["CPUExecutionProvider"])
+    vocoder = ort.InferenceSession(str(output / model_paths["vocoder"]), providers=["CPUExecutionProvider"])
+
+    x, prompts = encoder.run(None, {
+        name: fixtures[name] for name in metadata["encoder_input_names"]
+    })
+    y, y_emb, *present_key_values = first_decoder.run(None, {"x": x, "prompts": prompts})
+
+    idx = 0
+    for idx in range(500):
+        stage_values = [y, y_emb, *present_key_values]
+        outputs = stage_decoder.run(None, dict(zip(metadata["stage_input_names"], stage_values)))
+        y, y_emb, stop_condition, *present_key_values = outputs
+        if bool(np.asarray(stop_condition).any()):
+            break
+    else:
+        raise RuntimeError("Stage decoder did not stop within 500 iterations")
+
+    y[0, -1] = 0
+    semantic = np.expand_dims(y[:, -idx:] if idx else y, axis=0)
+    audio = vocoder.run(None, {
+        name: semantic if name == "pred_semantic" else fixtures[name]
+        for name in metadata["vocoder_input_names"]
+    })[0]
+    if audio.size == 0 or not np.isfinite(audio).all():
+        raise RuntimeError("Vocoder returned invalid audio")
+    print(f"Smoke test passed: {idx + 1} decoder iterations, {audio.size} audio samples")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("phase", choices=["download", "fixtures", "models", "finish"])
+    parser.add_argument("phase", choices=["download", "fixtures", "models", "finish", "smoke"])
     parser.add_argument("--cache", type=Path, default=Path("tools/.cache/genie"))
     parser.add_argument("--output", type=Path, default=Path("app/src/main/assets/benchmark"))
     args = parser.parse_args()
@@ -178,8 +225,10 @@ def main() -> None:
         fixtures(cache, output)
     elif args.phase == "models":
         models(cache, output)
-    else:
+    elif args.phase == "finish":
         finish(output)
+    else:
+        smoke(output)
 
 
 if __name__ == "__main__":
