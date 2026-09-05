@@ -113,7 +113,15 @@ class MainActivity : Activity() {
                 engine.play(result.audio, engine.readManifest().sampleRate)
                 postStatus(latestReport)
             } catch (error: Throwable) {
-                postStatus("测试失败：\n${error.stackTraceToString()}")
+                latestReport = buildString {
+                    appendLine("Genie-TTS Android Benchmark v0.1.1")
+                    appendLine(deviceLine())
+                    appendLine("测试：${testCase.title}")
+                    appendLine("文本：${testCase.text}")
+                    appendLine("结果：失败")
+                    append(error.stackTraceToString())
+                }
+                postStatus(latestReport)
             } finally {
                 runOnUiThread { setBusy(false) }
             }
@@ -134,4 +142,3 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 }
-
