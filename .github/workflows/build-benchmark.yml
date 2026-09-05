@@ -24,7 +24,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
@@ -56,4 +55,3 @@ jobs:
           path: Genie-TTS-Android-Benchmark-v0.1.0.apk
           retention-days: 3
           compression-level: 0
-
