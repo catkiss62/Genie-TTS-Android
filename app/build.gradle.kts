@@ -15,7 +15,6 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
     buildTypes { release { isMinifyEnabled = false } }
-    androidResources { noCompress += listOf("onnx", "bin", "tensor") }
     packaging { jniLibs { useLegacyPackaging = true } }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -27,4 +26,3 @@ android {
 dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 }
-
