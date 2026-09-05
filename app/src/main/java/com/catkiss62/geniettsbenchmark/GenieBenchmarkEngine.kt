@@ -139,7 +139,7 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
             case.title, case.text, lastModelLoadMs, fixtureLoadMs, encoderMs, firstMs,
             autoregressiveMs, vocoderMs, total, iterations, seconds,
             if (seconds > 0.0) total / (seconds * 1000.0) else Double.POSITIVE_INFINITY,
-            Debug.getPss() / 1024, audio
+            (Debug.getPss() / 1024L).toInt(), audio
         )
     }
 
