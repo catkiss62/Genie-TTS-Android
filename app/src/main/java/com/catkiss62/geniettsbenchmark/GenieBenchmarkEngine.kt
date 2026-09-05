@@ -92,14 +92,22 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         val autoregressiveStart = System.nanoTime()
         var loopIndex = 0
         var iterations = 0
+        var stageOutputsIncludeStopCondition = false
         while (loopIndex < 500) {
             val stageInputs = linkedMapOf<String, OnnxTensor>()
-            info.stageInputNames.forEachIndexed { index, name -> stageInputs[name] = decoderResult.get(index) as OnnxTensor }
+            info.stageInputNames.forEachIndexed { index, name ->
+                // The first decoder returns [y, y_emb, *present_key_values], while every
+                // stage decoder call returns [y, y_emb, stop_condition, *present_key_values].
+                // stop_condition is bool and must not be fed back into the float cache input.
+                val outputIndex = if (stageOutputsIncludeStopCondition && index >= 2) index + 1 else index
+                stageInputs[name] = decoderResult.get(outputIndex) as OnnxTensor
+            }
             val next = stageDecoder!!.run(stageInputs)
             decoderResult.close()
             decoderResult = next
             iterations += 1
             if (tensorIsTrue(decoderResult.get(2))) break
+            stageOutputsIncludeStopCondition = true
             loopIndex += 1
         }
         val autoregressiveMs = elapsedMs(autoregressiveStart)
