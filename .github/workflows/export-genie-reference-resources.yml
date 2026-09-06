@@ -89,10 +89,27 @@ jobs:
           path: public-toolchain
           retention-days: 1
           compression-level: 0
-      - name: Upload resolved Gradle cache
+      - name: Upload resolved Gradle cache part aa
         uses: actions/upload-artifact@v4
         with:
-          name: public-gradle-dependency-cache
-          path: public-gradle-cache
+          name: public-gradle-cache-aa
+          path: public-gradle-cache.part-aa
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+      - name: Upload resolved Gradle cache part ab
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-gradle-cache-ab
+          path: public-gradle-cache.part-ab
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+      - name: Upload resolved Gradle cache part ac
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-gradle-cache-ac
+          path: public-gradle-cache.part-ac
+          if-no-files-found: ignore
           retention-days: 1
           compression-level: 0
