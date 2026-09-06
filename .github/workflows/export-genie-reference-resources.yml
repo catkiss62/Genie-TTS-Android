@@ -75,13 +75,14 @@ jobs:
           gradle_bin="$(readlink -f "$(command -v gradle)")"
           gradle_root="$(dirname "$(dirname "$gradle_bin")")"
           build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
-          mkdir -p public-toolchain/gradle public-toolchain/android-sdk/platforms public-toolchain/android-sdk/build-tools public-gradle-cache
+          mkdir -p public-toolchain/gradle public-toolchain/android-sdk/platforms public-toolchain/android-sdk/build-tools
           cp -a "$gradle_root"/. public-toolchain/gradle/
           cp -a "$ANDROID_HOME/platforms/android-35" public-toolchain/android-sdk/platforms/
           cp -a "$build_tools" public-toolchain/android-sdk/build-tools/
           cp -a "$ANDROID_HOME/licenses" public-toolchain/android-sdk/
-          cp -a "$GRADLE_USER_HOME"/. public-gradle-cache/
-          du -sh public-toolchain/* public-gradle-cache
+          tar -C "$GRADLE_USER_HOME" -czf public-gradle-cache.tgz caches
+          split -b 400M public-gradle-cache.tgz public-gradle-cache.part-
+          du -sh public-toolchain/* public-gradle-cache.tgz public-gradle-cache.part-*
       - name: Upload public Android toolchain
         uses: actions/upload-artifact@v4
         with:
