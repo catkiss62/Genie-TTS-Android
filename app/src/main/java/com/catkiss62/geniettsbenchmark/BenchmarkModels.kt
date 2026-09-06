@@ -12,6 +12,33 @@ data class FeatureMode(
     val bertElements: Long,
     val toneDiagnostic: String,
 )
+data class TextPreset(
+    val id: String,
+    val title: String,
+    val text: String,
+    val tensors: List<TensorSpec>,
+    val bertNonZero: Long,
+    val bertElements: Long,
+)
+data class FrontendSpec(
+    val roberta: String,
+    val vocab: String,
+    val charPhones: String,
+    val phrasePhones: String,
+    val punctuationIds: String,
+    val maxPhraseChars: Int,
+    val bertDim: Int,
+    val quantization: String,
+)
+data class PreparedText(
+    val text: String,
+    val normalizedText: String,
+    val sequence: LongArray,
+    val bert: FloatArray,
+    val bertDim: Int,
+    val frontendMs: Long,
+    val diagnostic: String,
+)
 data class BenchmarkCase(
     val id: String,
     val title: String,
@@ -43,6 +70,8 @@ data class BenchmarkManifest(
     val models: Map<String, String>,
     val sharedTensors: List<TensorSpec>,
     val featureModes: List<FeatureMode>,
+    val presets: List<TextPreset>,
+    val frontend: FrontendSpec,
     val cases: List<BenchmarkCase>,
     val encoderInputNames: List<String>,
     val firstStageInputNames: List<String>,
@@ -75,23 +104,35 @@ data class BenchmarkManifest(
                     )
                 }
             }
+            val presets = root.getJSONArray("presets").let { array ->
+                List(array.length()) { index ->
+                    val item = array.getJSONObject(index)
+                    TextPreset(
+                        item.getString("id"), item.getString("title"), item.getString("text"),
+                        tensors(item, "tensors"), item.getLong("bert_nonzero"), item.getLong("bert_elements")
+                    )
+                }
+            }
+            val frontendObject = root.getJSONObject("frontend")
+            val frontend = FrontendSpec(
+                frontendObject.getString("roberta"), frontendObject.getString("vocab"),
+                frontendObject.getString("char_phones"), frontendObject.getString("phrase_phones"),
+                frontendObject.getString("punctuation_ids"), frontendObject.getInt("max_phrase_chars"),
+                frontendObject.getInt("bert_dim"), frontendObject.getString("quantization")
+            )
             val caseArray = root.getJSONArray("cases")
             val cases = List(caseArray.length()) { index ->
                 val item = caseArray.getJSONObject(index)
-                val featureObject = item.getJSONObject("feature_tensors")
-                val featureTensors = featureObject.keys().asSequence().associateWith { key ->
-                    tensors(featureObject, key)
-                }
                 BenchmarkCase(
                     item.getString("id"), item.getString("title"), item.getString("text"), tensors(item, "tensors"),
                     item.optString("reference_text").takeIf { it.isNotBlank() },
                     item.optString("reference_audio").takeIf { it.isNotBlank() },
-                    featureTensors,
                 )
             }
             return BenchmarkManifest(
                 root.getString("version"), root.getString("character"), root.getInt("sample_rate"), models,
-                tensors(root, "shared_tensors"), featureModes, cases, strings("encoder_input_names"), strings("first_stage_input_names"),
+                tensors(root, "shared_tensors"), featureModes, presets, frontend, cases,
+                strings("encoder_input_names"), strings("first_stage_input_names"),
                 strings("stage_input_names"), strings("vocoder_input_names"), strings("asset_files")
             )
         }
@@ -100,19 +141,23 @@ data class BenchmarkManifest(
 
 data class BenchmarkResult(
     val config: EngineConfig, val featureModeTitle: String, val featureDescription: String,
-    val caseTitle: String, val text: String, val modelLoadMs: Long, val fixtureLoadMs: Long,
+    val caseTitle: String, val targetTitle: String, val text: String, val normalizedText: String,
+    val frontendMs: Long, val frontendDiagnostic: String, val modelLoadMs: Long, val fixtureLoadMs: Long,
     val encoderMs: Long, val firstDecoderMs: Long, val autoregressiveMs: Long, val vocoderMs: Long,
     val totalInferenceMs: Long, val decoderIterations: Int, val audioSeconds: Double, val coreRtf: Double,
     val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android 中文声调测试 v0.3.1")
+        appendLine("Genie-TTS Android 多台词筛选 v0.3.2")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
         appendLine("中文特征：$featureModeTitle")
         appendLine("特征说明：$featureDescription")
         appendLine("测试：$caseTitle")
+        appendLine("台词类型：$targetTitle")
         appendLine("文本：$text")
+        if (normalizedText != text) appendLine("规范化文本：$normalizedText")
+        appendLine("中文前处理：${frontendMs} ms · $frontendDiagnostic")
         appendLine("本配置模型加载：${modelLoadMs} ms（不计入核心推理）")
         appendLine("测试张量读取：${fixtureLoadMs} ms")
         appendLine("T2S Encoder：${encoderMs} ms")

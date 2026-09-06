@@ -12,6 +12,7 @@ import android.view.WindowManager
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -25,12 +26,21 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
+    private data class TargetState(
+        val id: String,
+        val title: String,
+        val text: String,
+        val preset: TextPreset? = null,
+        val prepared: PreparedText? = null,
+    )
+
     private lateinit var engine: GenieBenchmarkEngine
+    private lateinit var frontend: ChineseFrontend
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
     private lateinit var buttons: LinearLayout
     private lateinit var selector: Spinner
-    private lateinit var featureSelector: Spinner
+    private lateinit var freeInput: EditText
     private lateinit var stopButton: Button
     private val worker = Executors.newSingleThreadExecutor()
     private val history = StringBuilder()
@@ -38,52 +48,64 @@ class MainActivity : Activity() {
     private val ratings = mutableMapOf<String, String>()
     private val config = EngineConfig(BackendMode.CPU, 8)
     private var preparedRoot: File? = null
+    private lateinit var activeTarget: TargetState
     @Volatile private var cancelRequested = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         engine = GenieBenchmarkEngine(this)
+        frontend = ChineseFrontend(engine)
         setContentView(buildUi())
         showInitialState()
     }
 
     private fun buildUi(): View {
-        val density = resources.displayMetrics.density
-        fun dp(value: Int) = (value * density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(20), dp(18), dp(20))
+            setPadding(dp(16), dp(16), dp(16), dp(16))
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         root.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 中文声调测试 v0.3.1"
-            textSize = 24f
+            text = "Genie-TTS v2.0.2\n恬豆 V2 多台词筛选 v0.3.2"
+            textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "同一套完整模型 · 9 段参考音频 · 全零/RoBERTa 对照 · CPU 8 线程"
+            text = "完整 RoBERTa · 8 个候选 · 4 类预设 · 本地自由输入 · CPU 8 线程"
+            textSize = 12f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, dp(6), 0, dp(6))
+        })
+        selector = Spinner(this)
+        root.addView(selector, LinearLayout.LayoutParams(-1, dp(48)))
+        root.addView(TextView(this).apply {
+            text = "快捷预设"
             textSize = 13f
             setTextColor(Color.DKGRAY)
-            setPadding(0, dp(8), 0, dp(10))
         })
-        featureSelector = Spinner(this)
-        root.addView(featureSelector, LinearLayout.LayoutParams(-1, dp(50)))
-        selector = Spinner(this)
-        root.addView(selector, LinearLayout.LayoutParams(-1, dp(50)))
+        buttons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(buttons)
+        freeInput = EditText(this).apply {
+            hint = "输入中文台词（建议单句 10–60 字，当前最多 80 字）"
+            minLines = 2
+            maxLines = 4
+            setTextColor(Color.rgb(35, 29, 48))
+            setHintTextColor(Color.GRAY)
+            setBackgroundColor(Color.WHITE)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+        }
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             visibility = View.GONE
             isIndeterminate = true
         }
         root.addView(progress, LinearLayout.LayoutParams(-1, dp(8)))
-        buttons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(buttons)
         status = TextView(this).apply {
-            textSize = 14f
+            textSize = 13f
             setTextColor(Color.rgb(35, 29, 48))
             setTextIsSelectable(true)
-            setPadding(0, dp(14), 0, dp(24))
+            setPadding(0, dp(10), 0, dp(20))
         }
         root.addView(ScrollView(this).apply { addView(status) }, LinearLayout.LayoutParams(-1, 0, 1f))
         return root
@@ -92,72 +114,83 @@ class MainActivity : Activity() {
     private fun showInitialState() {
         try {
             val manifest = engine.readManifest()
-            manifest.featureModes.forEach { mode ->
+            activeTarget = manifest.presets.first().toState()
+            freeInput.setText(activeTarget.text)
+            manifest.presets.forEach { preset ->
                 manifest.cases.forEach { item ->
-                    val key = resultKey(mode, item)
+                    val key = resultKey(preset.id, item)
                     getPreferences(MODE_PRIVATE).getString("rating_$key", null)?.let { ratings[key] = it }
                 }
             }
-            featureSelector.adapter = ArrayAdapter(
-                this,
-                android.R.layout.simple_spinner_dropdown_item,
-                manifest.featureModes.map { it.title },
-            )
-            featureSelector.setSelection(manifest.featureModes.indexOfFirst { it.id == "roberta_verified" }.coerceAtLeast(0))
-            featureSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = showCandidate()
-                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            }
-            selector.adapter = ArrayAdapter(
-                this,
-                android.R.layout.simple_spinner_dropdown_item,
-                manifest.cases.map { "${it.title}${if (it.id == "ref03") "（短参考）" else ""}" },
-            )
+            selector.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, manifest.cases.map { it.title })
             selector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = showCandidate()
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = showCurrent()
                 override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
-            addButton("播放当前候选的原始录音") { playOriginal() }
-            addButton("生成并播放当前候选") { runCurrent() }
+            addPresetRows(manifest.presets)
+            buttons.addView(freeInput, LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(4)
+                bottomMargin = dp(6)
+            })
+            addButton("生成上方自由输入并播放") { runCustom() }
+            addButton("生成并播放当前候选（当前台词）") { runCurrent() }
+            addButton("同一候选连续生成 3 次") { runCurrentThreeTimes() }
             addButton("播放当前候选的合成结果") { playGenerated() }
-            addButton("生成当前候选的旧版/新版对照") { runCurrentComparison() }
-            addButton("用当前模式生成全部 9 个候选") { runAll() }
+            addButton("播放当前候选的原始录音") { playOriginal() }
+            addButton("用当前台词生成全部 8 个候选") { runAll() }
             addRatingRow()
-            addButton("复制完整音色测试报告") { copyReport() }
+            addButton("复制完整筛选报告") { copyReport() }
             stopButton = addButton("停止当前生成") {
                 cancelRequested = true
                 updateStatus("已请求停止；当前 ONNX 算子结束后会退出。")
             }.apply { isEnabled = false }
-            showCandidate()
+            showCurrent()
         } catch (error: Throwable) {
-            status.text = "音色测试资源未正确打入 APK。\n\n${error.stackTraceToString()}"
+            status.text = "测试资源未正确打入 APK。\n\n${error.stackTraceToString()}"
         }
     }
 
+    private fun addPresetRows(presets: List<TextPreset>) {
+        presets.chunked(2).forEach { rowPresets ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            rowPresets.forEach { preset ->
+                row.addView(Button(this).apply {
+                    text = preset.title
+                    isAllCaps = false
+                    setOnClickListener {
+                        activeTarget = preset.toState()
+                        freeInput.setText(preset.text)
+                        showCurrent("已选择“${preset.title}”预设。")
+                    }
+                }, LinearLayout.LayoutParams(0, dp(44), 1f))
+            }
+            buttons.addView(row, LinearLayout.LayoutParams(-1, dp(48)))
+        }
+    }
+
+    private fun TextPreset.toState() = TargetState(id, title, text, preset = this)
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
     private fun addButton(label: String, action: () -> Unit): Button {
-        val density = resources.displayMetrics.density
         return Button(this).apply {
             text = label
             isAllCaps = false
             gravity = Gravity.CENTER
             setOnClickListener { action() }
-            buttons.addView(this, LinearLayout.LayoutParams(-1, (48 * density).toInt()).apply {
-                bottomMargin = (6 * density).toInt()
-            })
+            buttons.addView(this, LinearLayout.LayoutParams(-1, dp(46)).apply { bottomMargin = dp(4) })
         }
     }
 
     private fun addRatingRow() {
-        val density = resources.displayMetrics.density
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         listOf("喜欢", "一般", "淘汰").forEach { rating ->
             row.addView(Button(this).apply {
                 text = "标记$rating"
                 isAllCaps = false
                 setOnClickListener { rateCurrent(rating) }
-            }, LinearLayout.LayoutParams(0, (46 * density).toInt(), 1f))
+            }, LinearLayout.LayoutParams(0, dp(44), 1f))
         }
-        buttons.addView(row, LinearLayout.LayoutParams(-1, (52 * density).toInt()))
+        buttons.addView(row, LinearLayout.LayoutParams(-1, dp(48)))
     }
 
     private fun currentCase(): BenchmarkCase {
@@ -165,102 +198,112 @@ class MainActivity : Activity() {
         return cases[selector.selectedItemPosition.coerceIn(cases.indices)]
     }
 
-    private fun currentFeatureMode(): FeatureMode {
-        val modes = engine.readManifest().featureModes
-        return modes[featureSelector.selectedItemPosition.coerceIn(modes.indices)]
-    }
+    private fun resultKey(targetId: String, item: BenchmarkCase) = "$targetId:${item.id}"
 
-    private fun resultKey(mode: FeatureMode, item: BenchmarkCase) = "${mode.id}:${item.id}"
-
-    private fun showCandidate(extra: String? = null) {
+    private fun showCurrent(extra: String? = null) {
         val item = currentCase()
-        val mode = currentFeatureMode()
-        val key = resultKey(mode, item)
-        val result = generated[key]
+        val result = generated[resultKey(activeTarget.id, item)]
         status.text = buildString {
             appendLine(deviceLine())
-            appendLine("中文特征：${mode.title}")
-            appendLine(mode.description)
-            appendLine("声调检查：${mode.toneDiagnostic}")
-            appendLine("当前：${item.title}${if (item.id == "ref03") "（2.70 秒短参考）" else ""}")
+            appendLine("当前候选：${item.title}")
             appendLine("参考台词：${item.referenceText}")
-            appendLine("固定生成台词：${item.text}")
-            appendLine("标记：${ratings[key] ?: "未标记"}")
+            appendLine("当前台词：${activeTarget.title}")
+            appendLine(activeTarget.text)
+            appendLine("标记：${ratings[resultKey(activeTarget.id, item)] ?: "未标记"}")
             appendLine("合成：${result?.let { "已生成 · ${"%.3f".format(it.audioSeconds)} 秒 · RTF ${"%.3f".format(it.coreRtf)}" } ?: "尚未生成"}")
             if (extra != null) appendLine("\n$extra")
-            appendLine("\n推荐先测试“完整 Chinese RoBERTa”。旧版全零模式只用于确认差异。")
+            appendLine("\n四类预设使用精确 FP32 RoBERTa；自由输入使用手机端 INT8 RoBERTa。")
         }
     }
 
     private fun playOriginal() {
         val item = currentCase()
-        val path = item.referenceAudio ?: return showCandidate("此候选没有原始录音。")
+        val path = item.referenceAudio ?: return showCurrent("此候选没有原始录音。")
         runCatching { engine.playReferenceAsset(path) }
-            .onSuccess { showCandidate("正在播放原始录音。") }
-            .onFailure { showCandidate("原始录音播放失败：${it.message}") }
+            .onSuccess { showCurrent("正在播放原始录音。") }
+            .onFailure { showCurrent("原始录音播放失败：${it.message}") }
     }
 
     private fun playGenerated() {
         val item = currentCase()
-        val mode = currentFeatureMode()
-        val result = generated[resultKey(mode, item)] ?: return showCandidate("请先生成当前候选。")
+        val result = generated[resultKey(activeTarget.id, item)] ?: return showCurrent("请先生成当前候选和当前台词。")
         engine.play(result.audio, engine.readManifest().sampleRate)
-        showCandidate("正在播放合成结果。")
+        showCurrent("正在播放合成结果。")
     }
 
     private fun runCurrent() = runTask("生成 ${currentCase().title}") {
-        val item = currentCase()
-        val mode = currentFeatureMode()
-        val result = generate(item, mode)
+        val target = activeTarget
+        val result = generate(currentCase(), target)
         engine.play(result.audio, engine.readManifest().sampleRate)
-        runOnUiThread { showCandidate("生成完成，正在自动播放合成结果。") }
+        runOnUiThread { showCurrent("生成完成，正在自动播放。") }
     }
 
-    private fun runCurrentComparison() = runTask("生成当前候选对照") {
+    private fun runCurrentThreeTimes() = runTask("连续生成 3 次") {
         val item = currentCase()
-        val manifest = engine.readManifest()
-        ensureReady()
-        manifest.featureModes.forEachIndexed { index, mode ->
+        val target = activeTarget
+        repeat(3) { index ->
             checkCancelled()
-            postProgress(index, manifest.featureModes.size, "正在生成 ${mode.title}……")
-            generate(item, mode)
+            postProgress(index, 3, "正在生成第 ${index + 1} 次……")
+            generate(item, target, index + 1)
+            postProgress(index + 1, 3, "第 ${index + 1} 次完成")
         }
-        runOnUiThread {
-            featureSelector.setSelection(manifest.featureModes.indexOfFirst { it.id == "roberta_verified" }.coerceAtLeast(0))
-            showCandidate("旧版和 RoBERTa 结果都已生成。切换上方模式即可分别播放。")
-        }
+        runOnUiThread { showCurrent("连续三次已完成；当前播放记录为第三次，报告保留三次数据。") }
     }
 
     private fun runAll() = runTask("生成全部候选") {
         val manifest = engine.readManifest()
-        val mode = currentFeatureMode()
-        appendHistory("===== 全部候选中文声调测试 · ${timeStamp()} =====\n${deviceLine()}\n中文特征：${mode.title}\n${mode.description}\n声调检查：${mode.toneDiagnostic}\n固定台词：${manifest.cases.first().text}\n")
+        val target = activeTarget
+        appendHistory("===== 全部候选 · ${target.title} · ${timeStamp()} =====\n${deviceLine()}\n文本：${target.text}\n")
         ensureReady()
         manifest.cases.forEachIndexed { index, item ->
             checkCancelled()
             postProgress(index, manifest.cases.size, "正在生成 ${item.title}……")
-            generate(item, mode)
+            generate(item, target)
             postProgress(index + 1, manifest.cases.size, "${item.title} 已完成")
         }
-        runOnUiThread { showCandidate("九个候选均已生成。请在下拉框切换，逐个播放并标记。") }
+        runOnUiThread { showCurrent("八个候选均已生成。切换候选即可分别播放。") }
     }
 
-    private fun generate(item: BenchmarkCase, mode: FeatureMode): BenchmarkResult {
+    private fun runCustom() = runTask("生成自由输入") {
+        val input = freeInput.text.toString()
+        val root = ensureAssets()
+        engine.releaseModelsForFrontend()
+        engine.prepareFrontendAssets(root, ::postStatus)
+        val prepared = frontend.prepare(root, input, ::postStatus)
+        checkCancelled()
+        val target = TargetState(
+            id = "custom_${prepared.normalizedText.hashCode().toUInt().toString(16)}",
+            title = "自由输入",
+            text = prepared.text,
+            prepared = prepared,
+        )
+        activeTarget = target
+        val result = generate(currentCase(), target)
+        engine.play(result.audio, engine.readManifest().sampleRate)
+        runOnUiThread { showCurrent("自由输入生成完成，正在自动播放。") }
+    }
+
+    private fun generate(item: BenchmarkCase, target: TargetState, runNumber: Int? = null): BenchmarkResult {
         val root = ensureReady()
-        postStatus("${item.title}：正在生成固定台词……")
-        val result = engine.run(root, item, mode) { cancelRequested }
-        generated[resultKey(mode, item)] = result
+        postStatus("${item.title} · ${target.title}：正在生成……")
+        val result = when {
+            target.preset != null -> engine.runPreset(root, item, target.preset) { cancelRequested }
+            target.prepared != null -> engine.runPrepared(root, item, target.prepared) { cancelRequested }
+            else -> error("缺少目标台词特征")
+        }
+        generated[resultKey(target.id, item)] = result
         appendHistory(buildString {
-            appendLine("中文特征：${mode.title}")
-            appendLine("参考：${item.title}${if (item.id == "ref03") "（短参考）" else ""}")
+            appendLine("参考：${item.title}")
             appendLine("参考台词：${item.referenceText}")
-            append(result.report(deviceLine()))
+            append(result.report(deviceLine(), runNumber))
         })
         return result
     }
 
+    private fun ensureAssets(): File = preparedRoot ?: engine.prepareAssets(::postStatus).also { preparedRoot = it }
+
     private fun ensureReady(): File {
-        val root = preparedRoot ?: engine.prepareAssets(::postStatus).also { preparedRoot = it }
+        val root = ensureAssets()
         postStatus("正在加载恬豆 V2 模型（首次会较慢）……")
         engine.loadModels(root, config)
         return root
@@ -268,29 +311,28 @@ class MainActivity : Activity() {
 
     private fun rateCurrent(rating: String) {
         val item = currentCase()
-        val mode = currentFeatureMode()
-        val key = resultKey(mode, item)
+        val key = resultKey(activeTarget.id, item)
         ratings[key] = rating
         getPreferences(MODE_PRIVATE).edit().putString("rating_$key", rating).apply()
-        appendHistory("评分：${mode.title} · ${item.title} = $rating\n")
-        showCandidate("已标记为“$rating”。")
+        appendHistory("评分：${activeTarget.title} · ${item.title} = $rating\n")
+        showCurrent("已标记为“$rating”。")
     }
 
     private fun copyReport() {
         val manifest = engine.readManifest()
         val report = buildString {
             append(history)
-            appendLine("===== 当前评分汇总 =====")
-            manifest.featureModes.forEach { mode ->
-                appendLine(mode.title)
+            appendLine("===== 当前预设评分汇总 =====")
+            manifest.presets.forEach { preset ->
+                appendLine(preset.title)
                 manifest.cases.forEach { item ->
-                    appendLine("${item.title}：${ratings[resultKey(mode, item)] ?: "未标记"}")
+                    appendLine("${item.title}：${ratings[resultKey(preset.id, item)] ?: "未标记"}")
                 }
             }
         }
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS Tiandou tone test v0.3.1", report))
-        showCandidate("测试报告和评分汇总已复制。")
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS selection v0.3.2", report))
+        showCurrent("测试报告和评分汇总已复制。")
     }
 
     private fun runTask(name: String, task: () -> Unit) {
@@ -334,10 +376,10 @@ class MainActivity : Activity() {
         progress.visibility = if (value) View.VISIBLE else View.GONE
         if (value) progress.isIndeterminate = true
         selector.isEnabled = !value
-        featureSelector.isEnabled = !value
+        freeInput.isEnabled = !value
         fun update(view: View) {
             if (view is Button) view.isEnabled = if (::stopButton.isInitialized && view === stopButton) value else !value
-            if (view is LinearLayout) for (i in 0 until view.childCount) update(view.getChildAt(i))
+            if (view is LinearLayout) for (index in 0 until view.childCount) update(view.getChildAt(index))
         }
         update(buttons)
     }

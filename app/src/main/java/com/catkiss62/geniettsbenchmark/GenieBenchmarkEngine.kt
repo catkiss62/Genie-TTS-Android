@@ -13,6 +13,8 @@ import ai.onnxruntime.providers.NNAPIFlags
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
+import java.nio.LongBuffer
 import java.util.EnumSet
 import java.util.concurrent.CancellationException
 import kotlin.math.max
@@ -38,17 +40,29 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     fun prepareAssets(progress: (String) -> Unit): File {
         val info = readManifest()
         val root = File(context.filesDir, "genie-benchmark/${info.version}")
-        info.assetFiles.forEachIndexed { index, relative ->
+        copyAssets(root, info.assetFiles.filterNot { it.startsWith("frontend/") }, progress)
+        return root
+    }
+
+    fun prepareFrontendAssets(root: File, progress: (String) -> Unit) {
+        val frontend = readManifest().frontend
+        copyAssets(root, listOf(
+            frontend.roberta, frontend.vocab, frontend.charPhones,
+            frontend.phrasePhones, frontend.punctuationIds
+        ), progress)
+    }
+
+    private fun copyAssets(root: File, files: List<String>, progress: (String) -> Unit) {
+        files.forEachIndexed { index, relative ->
             val output = File(root, relative)
             if (!output.exists() || output.length() == 0L) {
-                progress("正在释放模型 ${index + 1}/${info.assetFiles.size}：${output.name}")
+                progress("正在释放资源 ${index + 1}/${files.size}：${output.name}")
                 output.parentFile?.mkdirs()
                 context.assets.open("benchmark/$relative").use { input ->
                     output.outputStream().buffered().use { target -> input.copyTo(target, 1024 * 1024) }
                 }
             }
         }
-        return root
     }
 
     fun loadModels(root: File, config: EngineConfig): Long {
@@ -69,6 +83,11 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         }
         lastModelLoadMs = elapsedMs(start)
         return lastModelLoadMs
+    }
+
+    fun releaseModelsForFrontend() {
+        unloadModels()
+        System.gc()
     }
 
     private fun createSession(model: File, config: EngineConfig, isVocoder: Boolean): OrtSession {
@@ -99,16 +118,55 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         }
     }
 
-    fun run(root: File, case: BenchmarkCase, featureMode: FeatureMode, shouldCancel: () -> Boolean = { false }): BenchmarkResult {
+    fun runPreset(
+        root: File,
+        case: BenchmarkCase,
+        preset: TextPreset,
+        shouldCancel: () -> Boolean = { false },
+    ): BenchmarkResult = run(
+        root, case, preset.title, preset.text, preset.text, 0L,
+        "预计算 FP32 Chinese RoBERTa · ${preset.bertNonZero}/${preset.bertElements} 非零",
+        preset.tensors, null, shouldCancel
+    )
+
+    fun runPrepared(
+        root: File,
+        case: BenchmarkCase,
+        prepared: PreparedText,
+        shouldCancel: () -> Boolean = { false },
+    ): BenchmarkResult = run(
+        root, case, "自由输入", prepared.text, prepared.normalizedText, prepared.frontendMs,
+        prepared.diagnostic, emptyList(), prepared, shouldCancel
+    )
+
+    private fun run(
+        root: File,
+        case: BenchmarkCase,
+        targetTitle: String,
+        targetText: String,
+        normalizedText: String,
+        frontendMs: Long,
+        frontendDiagnostic: String,
+        targetTensors: List<TensorSpec>,
+        prepared: PreparedText?,
+        shouldCancel: () -> Boolean,
+    ): BenchmarkResult {
         val info = readManifest()
         checkNotNull(encoder) { "请先加载模型" }
         val config = checkNotNull(currentConfig) { "缺少当前推理配置" }
         checkCancelled(shouldCancel)
-        val caseFeatures = case.featureTensors[featureMode.id]
-            ?: error("候选 ${case.id} 缺少 ${featureMode.id} 特征")
-        val specs = (info.sharedTensors + featureMode.tensors + case.tensors + caseFeatures).associateBy { it.name }
+        val specs = (info.sharedTensors + case.tensors + targetTensors).associateBy { it.name }
         val fixtureStart = System.nanoTime()
-        val loadedInputs = specs.mapValues { readTensor(root, it.value) }
+        val loadedInputs = specs.mapValuesTo(linkedMapOf()) { readTensor(root, it.value) }
+        if (prepared != null) {
+            loadedInputs["text_seq"] = OnnxTensor.createTensor(
+                env, LongBuffer.wrap(prepared.sequence), longArrayOf(1, prepared.sequence.size.toLong())
+            )
+            loadedInputs["text_bert"] = OnnxTensor.createTensor(
+                env, FloatBuffer.wrap(prepared.bert),
+                longArrayOf(prepared.sequence.size.toLong(), prepared.bertDim.toLong())
+            )
+        }
         val fixtureLoadMs = elapsedMs(fixtureStart)
         fun tensor(name: String): OnnxTensor = loadedInputs.getValue(name)
         try {
@@ -195,7 +253,8 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
             val total = encoderMs + firstMs + autoregressiveMs + vocoderMs
             val seconds = audio.size.toDouble() / info.sampleRate
             return BenchmarkResult(
-                config, featureMode.title, featureMode.description, case.title, case.text,
+                config, "完整 Chinese RoBERTa", "预设 FP32 / 自由输入 INT8；均为非零中文特征",
+                case.title, targetTitle, targetText, normalizedText, frontendMs, frontendDiagnostic,
                 lastModelLoadMs, fixtureLoadMs, encoderMs, firstMs,
                 autoregressiveMs, vocoderMs, total, iterations, seconds,
                 if (seconds > 0.0) total / (seconds * 1000.0) else Double.POSITIVE_INFINITY,
