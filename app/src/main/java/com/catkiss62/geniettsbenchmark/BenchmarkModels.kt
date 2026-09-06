@@ -5,6 +5,20 @@ import org.json.JSONObject
 data class TensorSpec(val name: String, val file: String, val dtype: String, val shape: LongArray)
 data class BenchmarkCase(val id: String, val title: String, val text: String, val tensors: List<TensorSpec>)
 
+enum class BackendMode(val displayName: String) {
+    CPU("CPU"),
+    XNNPACK("XNNPACK"),
+    NNAPI_VITS("NNAPI-FP16（仅 VITS）"),
+}
+
+data class EngineConfig(val backend: BackendMode, val threads: Int) {
+    val label: String
+        get() = when (backend) {
+            BackendMode.NNAPI_VITS -> "${backend.displayName} + CPU ${threads}线程"
+            else -> "${backend.displayName} ${threads}线程"
+        }
+}
+
 data class BenchmarkManifest(
     val version: String,
     val character: String,
@@ -44,17 +58,18 @@ data class BenchmarkManifest(
 }
 
 data class BenchmarkResult(
-    val caseTitle: String, val text: String, val modelLoadMs: Long, val fixtureLoadMs: Long,
+    val config: EngineConfig, val caseTitle: String, val text: String, val modelLoadMs: Long, val fixtureLoadMs: Long,
     val encoderMs: Long, val firstDecoderMs: Long, val autoregressiveMs: Long, val vocoderMs: Long,
     val totalInferenceMs: Long, val decoderIterations: Int, val audioSeconds: Double, val coreRtf: Double,
     val pssMb: Int, val audio: FloatArray,
 ) {
-    fun report(deviceLine: String): String = buildString {
-        appendLine("Genie-TTS Android Benchmark v0.1.1")
+    fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
+        appendLine("Genie-TTS Android Benchmark v0.2.0")
         appendLine(deviceLine)
+        appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
         appendLine("测试：$caseTitle")
         appendLine("文本：$text")
-        appendLine("模型加载：${modelLoadMs} ms（仅首次）")
+        appendLine("本配置模型加载：${modelLoadMs} ms（不计入核心推理）")
         appendLine("测试张量读取：${fixtureLoadMs} ms")
         appendLine("T2S Encoder：${encoderMs} ms")
         appendLine("首步 Decoder：${firstDecoderMs} ms")
