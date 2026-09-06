@@ -3,7 +3,14 @@ package com.catkiss62.geniettsbenchmark
 import org.json.JSONObject
 
 data class TensorSpec(val name: String, val file: String, val dtype: String, val shape: LongArray)
-data class BenchmarkCase(val id: String, val title: String, val text: String, val tensors: List<TensorSpec>)
+data class BenchmarkCase(
+    val id: String,
+    val title: String,
+    val text: String,
+    val tensors: List<TensorSpec>,
+    val referenceText: String? = null,
+    val referenceAudio: String? = null,
+)
 
 enum class BackendMode(val displayName: String) {
     CPU("CPU"),
@@ -46,7 +53,11 @@ data class BenchmarkManifest(
             val caseArray = root.getJSONArray("cases")
             val cases = List(caseArray.length()) { index ->
                 val item = caseArray.getJSONObject(index)
-                BenchmarkCase(item.getString("id"), item.getString("title"), item.getString("text"), tensors(item, "tensors"))
+                BenchmarkCase(
+                    item.getString("id"), item.getString("title"), item.getString("text"), tensors(item, "tensors"),
+                    item.optString("reference_text").takeIf { it.isNotBlank() },
+                    item.optString("reference_audio").takeIf { it.isNotBlank() },
+                )
             }
             return BenchmarkManifest(
                 root.getString("version"), root.getString("character"), root.getInt("sample_rate"), models,
@@ -64,7 +75,7 @@ data class BenchmarkResult(
     val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android Benchmark v0.2.0")
+        appendLine("Genie-TTS Android 音色测试 v0.3.0")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
         appendLine("测试：$caseTitle")
