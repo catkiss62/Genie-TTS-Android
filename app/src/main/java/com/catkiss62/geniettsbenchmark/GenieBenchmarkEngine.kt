@@ -195,9 +195,51 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     }
 
     fun play(audio: FloatArray, sampleRate: Int) {
+        val pcm = ShortArray(audio.size) { (audio[it].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort() }
+        playPcm(pcm, sampleRate)
+    }
+
+    fun playReferenceAsset(relative: String) {
+        val bytes = context.assets.open("benchmark/$relative").use { it.readBytes() }
+        check(bytes.size >= 44 && String(bytes, 0, 4, Charsets.US_ASCII) == "RIFF") { "参考音频不是标准 WAV" }
+        var channels = 0
+        var sampleRate = 0
+        var bits = 0
+        var format = 0
+        var dataOffset = -1
+        var dataSize = 0
+        var offset = 12
+        while (offset + 8 <= bytes.size) {
+            val id = String(bytes, offset, 4, Charsets.US_ASCII)
+            val size = ByteBuffer.wrap(bytes, offset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            val body = offset + 8
+            if (id == "fmt " && size >= 16 && body + 16 <= bytes.size) {
+                val fmt = ByteBuffer.wrap(bytes, body, 16).order(ByteOrder.LITTLE_ENDIAN)
+                format = fmt.short.toInt() and 0xffff
+                channels = fmt.short.toInt() and 0xffff
+                sampleRate = fmt.int
+                fmt.int
+                fmt.short
+                bits = fmt.short.toInt() and 0xffff
+            } else if (id == "data") {
+                dataOffset = body
+                dataSize = min(size, bytes.size - body)
+                break
+            }
+            offset = body + size + (size and 1)
+        }
+        check(format == 1 && channels == 1 && bits == 16 && dataOffset >= 0) {
+            "只支持单声道 PCM16 WAV（当前 format=$format, channels=$channels, bits=$bits）"
+        }
+        val shorts = ByteBuffer.wrap(bytes, dataOffset, dataSize).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        val pcm = ShortArray(shorts.remaining())
+        shorts.get(pcm)
+        playPcm(pcm, sampleRate)
+    }
+
+    private fun playPcm(pcm: ShortArray, sampleRate: Int) {
         audioTrack?.runCatching { stop() }
         audioTrack?.release()
-        val pcm = ShortArray(audio.size) { (audio[it].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort() }
         val minBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         audioTrack = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
