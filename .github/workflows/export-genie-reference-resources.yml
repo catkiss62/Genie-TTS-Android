@@ -1,4 +1,4 @@
-name: Export public Genie reference resources
+name: Export public Genie build resources
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  export:
+  reference-resources:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -48,5 +48,37 @@ jobs:
         with:
           name: public-genie-reference-resources
           path: public-genie-data/GenieData
+          retention-days: 1
+          compression-level: 0
+
+  android-toolchain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Collect Gradle and Android SDK
+        shell: bash
+        run: |
+          set -eu
+          gradle_bin="$(readlink -f "$(command -v gradle)")"
+          gradle_root="$(dirname "$(dirname "$gradle_bin")")"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          mkdir -p public-toolchain/gradle public-toolchain/android-sdk/platforms public-toolchain/android-sdk/build-tools
+          cp -a "$gradle_root"/. public-toolchain/gradle/
+          cp -a "$ANDROID_HOME/platforms/android-35" public-toolchain/android-sdk/platforms/
+          cp -a "$build_tools" public-toolchain/android-sdk/build-tools/
+          cp -a "$ANDROID_HOME/licenses" public-toolchain/android-sdk/
+          du -sh public-toolchain/*
+      - name: Upload public Android toolchain
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-android-toolchain
+          path: public-toolchain
           retention-days: 1
           compression-level: 0
