@@ -81,6 +81,7 @@ jobs:
           cp -a "$build_tools" public-toolchain/android-sdk/build-tools/
           cp -a "$ANDROID_HOME/licenses" public-toolchain/android-sdk/
           tar -C "$GRADLE_USER_HOME" -czf public-gradle-cache.tgz caches
+          tar -C "$JAVA_HOME" -czf public-jdk17.tgz .
           split -b 400M public-gradle-cache.tgz public-gradle-cache.part-
           du -sh public-toolchain/* public-gradle-cache.tgz public-gradle-cache.part-*
       - name: Upload public Android toolchain
@@ -88,6 +89,13 @@ jobs:
         with:
           name: public-android-toolchain
           path: public-toolchain
+          retention-days: 1
+          compression-level: 0
+      - name: Upload JDK 17
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-jdk17
+          path: public-jdk17.tgz
           retention-days: 1
           compression-level: 0
       - name: Upload resolved Gradle cache part aa
