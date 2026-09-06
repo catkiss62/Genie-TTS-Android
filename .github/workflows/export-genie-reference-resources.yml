@@ -53,8 +53,11 @@ jobs:
 
   android-toolchain:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    env:
+      GRADLE_USER_HOME: ${{ runner.temp }}/genie-gradle-user-home
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -62,23 +65,34 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
-      - name: Collect Gradle and Android SDK
+          cache-disabled: true
+      - name: Resolve Android build dependencies
+        run: gradle --no-daemon :app:compileDebugKotlin
+      - name: Collect Gradle, Android SDK and dependency cache
         shell: bash
         run: |
           set -eu
           gradle_bin="$(readlink -f "$(command -v gradle)")"
           gradle_root="$(dirname "$(dirname "$gradle_bin")")"
           build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
-          mkdir -p public-toolchain/gradle public-toolchain/android-sdk/platforms public-toolchain/android-sdk/build-tools
+          mkdir -p public-toolchain/gradle public-toolchain/android-sdk/platforms public-toolchain/android-sdk/build-tools public-gradle-cache
           cp -a "$gradle_root"/. public-toolchain/gradle/
           cp -a "$ANDROID_HOME/platforms/android-35" public-toolchain/android-sdk/platforms/
           cp -a "$build_tools" public-toolchain/android-sdk/build-tools/
           cp -a "$ANDROID_HOME/licenses" public-toolchain/android-sdk/
-          du -sh public-toolchain/*
+          cp -a "$GRADLE_USER_HOME"/. public-gradle-cache/
+          du -sh public-toolchain/* public-gradle-cache
       - name: Upload public Android toolchain
         uses: actions/upload-artifact@v4
         with:
           name: public-android-toolchain
           path: public-toolchain
+          retention-days: 1
+          compression-level: 0
+      - name: Upload resolved Gradle cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-gradle-dependency-cache
+          path: public-gradle-cache
           retention-days: 1
           compression-level: 0
