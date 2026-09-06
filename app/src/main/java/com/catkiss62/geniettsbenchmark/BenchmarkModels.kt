@@ -3,6 +3,15 @@ package com.catkiss62.geniettsbenchmark
 import org.json.JSONObject
 
 data class TensorSpec(val name: String, val file: String, val dtype: String, val shape: LongArray)
+data class FeatureMode(
+    val id: String,
+    val title: String,
+    val description: String,
+    val tensors: List<TensorSpec>,
+    val bertNonZero: Long,
+    val bertElements: Long,
+    val toneDiagnostic: String,
+)
 data class BenchmarkCase(
     val id: String,
     val title: String,
@@ -10,6 +19,7 @@ data class BenchmarkCase(
     val tensors: List<TensorSpec>,
     val referenceText: String? = null,
     val referenceAudio: String? = null,
+    val featureTensors: Map<String, List<TensorSpec>> = emptyMap(),
 )
 
 enum class BackendMode(val displayName: String) {
@@ -32,6 +42,7 @@ data class BenchmarkManifest(
     val sampleRate: Int,
     val models: Map<String, String>,
     val sharedTensors: List<TensorSpec>,
+    val featureModes: List<FeatureMode>,
     val cases: List<BenchmarkCase>,
     val encoderInputNames: List<String>,
     val firstStageInputNames: List<String>,
@@ -50,18 +61,37 @@ data class BenchmarkManifest(
             fun tensors(obj: JSONObject, key: String) = obj.getJSONArray(key).let { a -> List(a.length()) { tensor(a.getJSONObject(it)) } }
             val modelObject = root.getJSONObject("models")
             val models = modelObject.keys().asSequence().associateWith { modelObject.getString(it) }
+            val featureModes = root.getJSONArray("feature_modes").let { array ->
+                List(array.length()) { index ->
+                    val item = array.getJSONObject(index)
+                    FeatureMode(
+                        id = item.getString("id"),
+                        title = item.getString("title"),
+                        description = item.getString("description"),
+                        tensors = tensors(item, "tensors"),
+                        bertNonZero = item.getLong("bert_nonzero"),
+                        bertElements = item.getLong("bert_elements"),
+                        toneDiagnostic = item.getString("tone_diagnostic"),
+                    )
+                }
+            }
             val caseArray = root.getJSONArray("cases")
             val cases = List(caseArray.length()) { index ->
                 val item = caseArray.getJSONObject(index)
+                val featureObject = item.getJSONObject("feature_tensors")
+                val featureTensors = featureObject.keys().asSequence().associateWith { key ->
+                    tensors(featureObject, key)
+                }
                 BenchmarkCase(
                     item.getString("id"), item.getString("title"), item.getString("text"), tensors(item, "tensors"),
                     item.optString("reference_text").takeIf { it.isNotBlank() },
                     item.optString("reference_audio").takeIf { it.isNotBlank() },
+                    featureTensors,
                 )
             }
             return BenchmarkManifest(
                 root.getString("version"), root.getString("character"), root.getInt("sample_rate"), models,
-                tensors(root, "shared_tensors"), cases, strings("encoder_input_names"), strings("first_stage_input_names"),
+                tensors(root, "shared_tensors"), featureModes, cases, strings("encoder_input_names"), strings("first_stage_input_names"),
                 strings("stage_input_names"), strings("vocoder_input_names"), strings("asset_files")
             )
         }
@@ -69,15 +99,18 @@ data class BenchmarkManifest(
 }
 
 data class BenchmarkResult(
-    val config: EngineConfig, val caseTitle: String, val text: String, val modelLoadMs: Long, val fixtureLoadMs: Long,
+    val config: EngineConfig, val featureModeTitle: String, val featureDescription: String,
+    val caseTitle: String, val text: String, val modelLoadMs: Long, val fixtureLoadMs: Long,
     val encoderMs: Long, val firstDecoderMs: Long, val autoregressiveMs: Long, val vocoderMs: Long,
     val totalInferenceMs: Long, val decoderIterations: Int, val audioSeconds: Double, val coreRtf: Double,
     val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android 音色测试 v0.3.0")
+        appendLine("Genie-TTS Android 中文声调测试 v0.3.1")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
+        appendLine("中文特征：$featureModeTitle")
+        appendLine("特征说明：$featureDescription")
         appendLine("测试：$caseTitle")
         appendLine("文本：$text")
         appendLine("本配置模型加载：${modelLoadMs} ms（不计入核心推理）")

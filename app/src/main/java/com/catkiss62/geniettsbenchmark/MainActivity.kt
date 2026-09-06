@@ -30,6 +30,7 @@ class MainActivity : Activity() {
     private lateinit var progress: ProgressBar
     private lateinit var buttons: LinearLayout
     private lateinit var selector: Spinner
+    private lateinit var featureSelector: Spinner
     private lateinit var stopButton: Button
     private val worker = Executors.newSingleThreadExecutor()
     private val history = StringBuilder()
@@ -56,17 +57,19 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         root.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 音色盲测 v0.3.0"
+            text = "Genie-TTS v2.0.2\n恬豆 V2 中文声调测试 v0.3.1"
             textSize = 24f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "同一套 GPT + SoVITS 权重 · 9 段参考音频 · 固定测试台词 · CPU 8 线程"
+            text = "同一套完整模型 · 9 段参考音频 · 全零/RoBERTa 对照 · CPU 8 线程"
             textSize = 13f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(8), 0, dp(10))
         })
+        featureSelector = Spinner(this)
+        root.addView(featureSelector, LinearLayout.LayoutParams(-1, dp(50)))
         selector = Spinner(this)
         root.addView(selector, LinearLayout.LayoutParams(-1, dp(50)))
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -89,8 +92,21 @@ class MainActivity : Activity() {
     private fun showInitialState() {
         try {
             val manifest = engine.readManifest()
-            manifest.cases.forEach { item ->
-                getPreferences(MODE_PRIVATE).getString("rating_${item.id}", null)?.let { ratings[item.id] = it }
+            manifest.featureModes.forEach { mode ->
+                manifest.cases.forEach { item ->
+                    val key = resultKey(mode, item)
+                    getPreferences(MODE_PRIVATE).getString("rating_$key", null)?.let { ratings[key] = it }
+                }
+            }
+            featureSelector.adapter = ArrayAdapter(
+                this,
+                android.R.layout.simple_spinner_dropdown_item,
+                manifest.featureModes.map { it.title },
+            )
+            featureSelector.setSelection(manifest.featureModes.indexOfFirst { it.id == "roberta_verified" }.coerceAtLeast(0))
+            featureSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = showCandidate()
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
             selector.adapter = ArrayAdapter(
                 this,
@@ -104,7 +120,8 @@ class MainActivity : Activity() {
             addButton("播放当前候选的原始录音") { playOriginal() }
             addButton("生成并播放当前候选") { runCurrent() }
             addButton("播放当前候选的合成结果") { playGenerated() }
-            addButton("依次生成全部 9 个候选") { runAll() }
+            addButton("生成当前候选的旧版/新版对照") { runCurrentComparison() }
+            addButton("用当前模式生成全部 9 个候选") { runAll() }
             addRatingRow()
             addButton("复制完整音色测试报告") { copyReport() }
             stopButton = addButton("停止当前生成") {
@@ -148,18 +165,30 @@ class MainActivity : Activity() {
         return cases[selector.selectedItemPosition.coerceIn(cases.indices)]
     }
 
+    private fun currentFeatureMode(): FeatureMode {
+        val modes = engine.readManifest().featureModes
+        return modes[featureSelector.selectedItemPosition.coerceIn(modes.indices)]
+    }
+
+    private fun resultKey(mode: FeatureMode, item: BenchmarkCase) = "${mode.id}:${item.id}"
+
     private fun showCandidate(extra: String? = null) {
         val item = currentCase()
-        val result = generated[item.id]
+        val mode = currentFeatureMode()
+        val key = resultKey(mode, item)
+        val result = generated[key]
         status.text = buildString {
             appendLine(deviceLine())
+            appendLine("中文特征：${mode.title}")
+            appendLine(mode.description)
+            appendLine("声调检查：${mode.toneDiagnostic}")
             appendLine("当前：${item.title}${if (item.id == "ref03") "（2.70 秒短参考）" else ""}")
             appendLine("参考台词：${item.referenceText}")
             appendLine("固定生成台词：${item.text}")
-            appendLine("标记：${ratings[item.id] ?: "未标记"}")
+            appendLine("标记：${ratings[key] ?: "未标记"}")
             appendLine("合成：${result?.let { "已生成 · ${"%.3f".format(it.audioSeconds)} 秒 · RTF ${"%.3f".format(it.coreRtf)}" } ?: "尚未生成"}")
             if (extra != null) appendLine("\n$extra")
-            appendLine("\n建议先听原音，再生成并听合成结果。情绪文件夹名称不参与推理。")
+            appendLine("\n推荐先测试“完整 Chinese RoBERTa”。旧版全零模式只用于确认差异。")
         }
     }
 
@@ -173,37 +202,56 @@ class MainActivity : Activity() {
 
     private fun playGenerated() {
         val item = currentCase()
-        val result = generated[item.id] ?: return showCandidate("请先生成当前候选。")
+        val mode = currentFeatureMode()
+        val result = generated[resultKey(mode, item)] ?: return showCandidate("请先生成当前候选。")
         engine.play(result.audio, engine.readManifest().sampleRate)
         showCandidate("正在播放合成结果。")
     }
 
     private fun runCurrent() = runTask("生成 ${currentCase().title}") {
         val item = currentCase()
-        val result = generate(item)
+        val mode = currentFeatureMode()
+        val result = generate(item, mode)
         engine.play(result.audio, engine.readManifest().sampleRate)
         runOnUiThread { showCandidate("生成完成，正在自动播放合成结果。") }
     }
 
+    private fun runCurrentComparison() = runTask("生成当前候选对照") {
+        val item = currentCase()
+        val manifest = engine.readManifest()
+        ensureReady()
+        manifest.featureModes.forEachIndexed { index, mode ->
+            checkCancelled()
+            postProgress(index, manifest.featureModes.size, "正在生成 ${mode.title}……")
+            generate(item, mode)
+        }
+        runOnUiThread {
+            featureSelector.setSelection(manifest.featureModes.indexOfFirst { it.id == "roberta_verified" }.coerceAtLeast(0))
+            showCandidate("旧版和 RoBERTa 结果都已生成。切换上方模式即可分别播放。")
+        }
+    }
+
     private fun runAll() = runTask("生成全部候选") {
         val manifest = engine.readManifest()
-        appendHistory("===== 全部候选音色测试 · ${timeStamp()} =====\n${deviceLine()}\n固定台词：${manifest.cases.first().text}\n")
+        val mode = currentFeatureMode()
+        appendHistory("===== 全部候选中文声调测试 · ${timeStamp()} =====\n${deviceLine()}\n中文特征：${mode.title}\n${mode.description}\n声调检查：${mode.toneDiagnostic}\n固定台词：${manifest.cases.first().text}\n")
         ensureReady()
         manifest.cases.forEachIndexed { index, item ->
             checkCancelled()
             postProgress(index, manifest.cases.size, "正在生成 ${item.title}……")
-            generate(item)
+            generate(item, mode)
             postProgress(index + 1, manifest.cases.size, "${item.title} 已完成")
         }
         runOnUiThread { showCandidate("九个候选均已生成。请在下拉框切换，逐个播放并标记。") }
     }
 
-    private fun generate(item: BenchmarkCase): BenchmarkResult {
+    private fun generate(item: BenchmarkCase, mode: FeatureMode): BenchmarkResult {
         val root = ensureReady()
         postStatus("${item.title}：正在生成固定台词……")
-        val result = engine.run(root, item) { cancelRequested }
-        generated[item.id] = result
+        val result = engine.run(root, item, mode) { cancelRequested }
+        generated[resultKey(mode, item)] = result
         appendHistory(buildString {
+            appendLine("中文特征：${mode.title}")
             appendLine("参考：${item.title}${if (item.id == "ref03") "（短参考）" else ""}")
             appendLine("参考台词：${item.referenceText}")
             append(result.report(deviceLine()))
@@ -220,9 +268,11 @@ class MainActivity : Activity() {
 
     private fun rateCurrent(rating: String) {
         val item = currentCase()
-        ratings[item.id] = rating
-        getPreferences(MODE_PRIVATE).edit().putString("rating_${item.id}", rating).apply()
-        appendHistory("评分：${item.title} = $rating\n")
+        val mode = currentFeatureMode()
+        val key = resultKey(mode, item)
+        ratings[key] = rating
+        getPreferences(MODE_PRIVATE).edit().putString("rating_$key", rating).apply()
+        appendHistory("评分：${mode.title} · ${item.title} = $rating\n")
         showCandidate("已标记为“$rating”。")
     }
 
@@ -231,10 +281,15 @@ class MainActivity : Activity() {
         val report = buildString {
             append(history)
             appendLine("===== 当前评分汇总 =====")
-            manifest.cases.forEach { appendLine("${it.title}：${ratings[it.id] ?: "未标记"}") }
+            manifest.featureModes.forEach { mode ->
+                appendLine(mode.title)
+                manifest.cases.forEach { item ->
+                    appendLine("${item.title}：${ratings[resultKey(mode, item)] ?: "未标记"}")
+                }
+            }
         }
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS Tiandou audition v0.3.0", report))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS Tiandou tone test v0.3.1", report))
         showCandidate("测试报告和评分汇总已复制。")
     }
 
@@ -279,6 +334,7 @@ class MainActivity : Activity() {
         progress.visibility = if (value) View.VISIBLE else View.GONE
         if (value) progress.isIndeterminate = true
         selector.isEnabled = !value
+        featureSelector.isEnabled = !value
         fun update(view: View) {
             if (view is Button) view.isEnabled = if (::stopButton.isInitialized && view === stopButton) value else !value
             if (view is LinearLayout) for (i in 0 until view.childCount) update(view.getChildAt(i))

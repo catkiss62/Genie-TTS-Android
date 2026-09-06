@@ -16,6 +16,17 @@ import onnx
 TARGET_TEXT = "你好呀，今天过得怎么样？如果有什么想说的，我会认真听你慢慢讲。"
 
 
+def require_chinese_bert(label: str, array: np.ndarray) -> None:
+    """Reject the silent zero fallback used when Chinese RoBERTa is unavailable."""
+    nonzero = int(np.count_nonzero(array))
+    if nonzero == 0:
+        raise RuntimeError(
+            f"{label} 的 Chinese RoBERTa 特征全为 0。"
+            "请确认 GenieData/Chinese-RoBERTa-wwm-ext-large 的 tokenizer 与 model.onnx 可用；"
+            "为避免把缺失的韵律特征静默打入 APK，已停止资源制作。"
+        )
+
+
 def write_tensor(output: Path, relative: str, name: str, array: np.ndarray) -> dict:
     array = np.ascontiguousarray(array)
     if array.dtype == np.float64:
@@ -73,6 +84,7 @@ def build(args: argparse.Namespace) -> None:
 
     refs = json.loads(args.references_json.read_text(encoding="utf-8"))
     target_seq, target_bert = get_phones_and_bert("。" + TARGET_TEXT, language="Chinese")
+    require_chinese_bert("目标文本", target_bert)
     shared = [
         write_tensor(output, "tensors/target_text_seq.tensor", "text_seq", target_seq),
         write_tensor(output, "tensors/target_text_bert.tensor", "text_bert", target_bert),
@@ -82,6 +94,7 @@ def build(args: argparse.Namespace) -> None:
     for item in refs:
         ref_path = args.references_dir / item["audio"]
         prompt = ReferenceAudio(str(ref_path), item["transcript"], "Chinese")
+        require_chinese_bert(f'{item["title"]} 参考文本', prompt.text_bert)
         audio_target = output / "references" / f'{item["id"]}.wav'
         audio_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ref_path, audio_target)

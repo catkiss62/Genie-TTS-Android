@@ -99,12 +99,14 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         }
     }
 
-    fun run(root: File, case: BenchmarkCase, shouldCancel: () -> Boolean = { false }): BenchmarkResult {
+    fun run(root: File, case: BenchmarkCase, featureMode: FeatureMode, shouldCancel: () -> Boolean = { false }): BenchmarkResult {
         val info = readManifest()
         checkNotNull(encoder) { "请先加载模型" }
         val config = checkNotNull(currentConfig) { "缺少当前推理配置" }
         checkCancelled(shouldCancel)
-        val specs = (info.sharedTensors + case.tensors).associateBy { it.name }
+        val caseFeatures = case.featureTensors[featureMode.id]
+            ?: error("候选 ${case.id} 缺少 ${featureMode.id} 特征")
+        val specs = (info.sharedTensors + featureMode.tensors + case.tensors + caseFeatures).associateBy { it.name }
         val fixtureStart = System.nanoTime()
         val loadedInputs = specs.mapValues { readTensor(root, it.value) }
         val fixtureLoadMs = elapsedMs(fixtureStart)
@@ -155,9 +157,18 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
             if (yValues.isNotEmpty()) yValues[yValues.lastIndex] = 0L
             val requested = if (loopIndex == 0) yValues.size else loopIndex
             val semanticCount = min(max(1, requested), yValues.size)
-            val semantic = yValues.copyOfRange(yValues.size - semanticCount, yValues.size)
+            val selectedSemantic = yValues.copyOfRange(yValues.size - semanticCount, yValues.size)
+            // Match Genie's Python inference: remove the first invalid/EOS token and anything
+            // after it before the VITS call. Usually the forced final zero means this is a no-op,
+            // but keeping the guard prevents an early invalid token from reaching the vocoder.
+            val firstInvalid = selectedSemantic.indexOfFirst { it >= 1024L }
+            val semantic = when {
+                firstInvalid > 0 -> selectedSemantic.copyOf(firstInvalid)
+                firstInvalid == 0 -> longArrayOf(0L)
+                else -> selectedSemantic
+            }
             val semanticTensor = OnnxTensor.createTensor(
-                env, java.nio.LongBuffer.wrap(semantic), longArrayOf(1, 1, semanticCount.toLong())
+                env, java.nio.LongBuffer.wrap(semantic), longArrayOf(1, 1, semantic.size.toLong())
             )
             decoderResult.close()
 
@@ -184,7 +195,8 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
             val total = encoderMs + firstMs + autoregressiveMs + vocoderMs
             val seconds = audio.size.toDouble() / info.sampleRate
             return BenchmarkResult(
-                config, case.title, case.text, lastModelLoadMs, fixtureLoadMs, encoderMs, firstMs,
+                config, featureMode.title, featureMode.description, case.title, case.text,
+                lastModelLoadMs, fixtureLoadMs, encoderMs, firstMs,
                 autoregressiveMs, vocoderMs, total, iterations, seconds,
                 if (seconds > 0.0) total / (seconds * 1000.0) else Double.POSITIVE_INFINITY,
                 (Debug.getPss() / 1024L).toInt(), audio
