@@ -9,8 +9,10 @@ import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import kotlin.math.max
 
-class ChineseFrontend(private val engine: GenieBenchmarkEngine) {
+class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
+    private var robertaSession: OrtSession? = null
+    private var robertaPath: String? = null
     private var vocab: Map<String, Long>? = null
     private var charPhones: Map<String, List<LongArray>>? = null
     private var phrasePhones: Map<String, List<LongArray>>? = null
@@ -18,6 +20,16 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) {
     private val cache = object : LinkedHashMap<String, PreparedText>(4, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PreparedText>?) = size > 4
     }
+
+    fun clearPreparedCache() = synchronized(cache) { cache.clear() }
+
+    fun closeModel() {
+        robertaSession?.close()
+        robertaSession = null
+        robertaPath = null
+    }
+
+    override fun close() = closeModel()
 
     fun prepare(root: File, original: String, progress: (String) -> Unit): PreparedText {
         val text = original.trim()
@@ -166,7 +178,7 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) {
         )
         val allowedPunctuation = setOf('!', '?', '…', ',', '.', '-')
         val output = StringBuilder(".")
-        text.replace("...", "…").forEach { char ->
+        text.replace("...", "…").replace("快看快看", "快看，快看").forEach { char ->
             val normalized = when {
                 char in digits -> digits.getValue(char)
                 char in replacements -> replacements.getValue(char)
@@ -182,34 +194,38 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) {
     }
 
     private fun runRoberta(root: File, info: FrontendSpec, tokenIds: LongArray): FloatArray {
-        val options = OrtSession.SessionOptions().apply {
-            setInterOpNumThreads(1)
-            setIntraOpNumThreads(max(1, Runtime.getRuntime().availableProcessors()))
-            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-        }
-        val session = try {
-            env.createSession(File(root, info.roberta).absolutePath, options)
-        } finally {
-            options.close()
-        }
-        return session.use { ortSession ->
-            val shape = longArrayOf(1, tokenIds.size.toLong())
-            val ids = OnnxTensor.createTensor(env, LongBuffer.wrap(tokenIds), shape)
-            val tokenTypes = OnnxTensor.createTensor(env, LongBuffer.wrap(LongArray(tokenIds.size)), shape)
-            val attention = OnnxTensor.createTensor(env, LongBuffer.wrap(LongArray(tokenIds.size) { 1L }), shape)
-            try {
-                ortSession.run(mapOf("input_ids" to ids, "token_type_ids" to tokenTypes, "attention_mask" to attention)).use { result ->
-                    val tensor = result.get(0) as OnnxTensor
-                    val tensorInfo = tensor.info as TensorInfo
-                    val values = FloatArray(tensorInfo.shape.fold(1L) { total, item -> total * item }.toInt())
-                    tensor.floatBuffer.get(values)
-                    values
-                }
-            } finally {
-                ids.close()
-                tokenTypes.close()
-                attention.close()
+        val modelPath = engine.frontendModelFile(root).absolutePath
+        if (robertaSession == null || robertaPath != modelPath) {
+            closeModel()
+            val options = OrtSession.SessionOptions().apply {
+                setInterOpNumThreads(1)
+                setIntraOpNumThreads(max(1, Runtime.getRuntime().availableProcessors()))
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             }
+            robertaSession = try {
+                env.createSession(modelPath, options)
+            } finally {
+                options.close()
+            }
+            robertaPath = modelPath
+        }
+        val ortSession = checkNotNull(robertaSession)
+        val shape = longArrayOf(1, tokenIds.size.toLong())
+        val ids = OnnxTensor.createTensor(env, LongBuffer.wrap(tokenIds), shape)
+        val tokenTypes = OnnxTensor.createTensor(env, LongBuffer.wrap(LongArray(tokenIds.size)), shape)
+        val attention = OnnxTensor.createTensor(env, LongBuffer.wrap(LongArray(tokenIds.size) { 1L }), shape)
+        try {
+            ortSession.run(mapOf("input_ids" to ids, "token_type_ids" to tokenTypes, "attention_mask" to attention)).use { result ->
+                val tensor = result.get(0) as OnnxTensor
+                val tensorInfo = tensor.info as TensorInfo
+                val values = FloatArray(tensorInfo.shape.fold(1L) { total, item -> total * item }.toInt())
+                tensor.floatBuffer.get(values)
+                return values
+            }
+        } finally {
+            ids.close()
+            tokenTypes.close()
+            attention.close()
         }
     }
 }

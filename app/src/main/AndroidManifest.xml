@@ -3,7 +3,7 @@
     <application
         android:allowBackup="false"
         android:extractNativeLibs="true"
-        android:label="Genie TTS 多台词筛选"
+        android:label="Genie TTS 性能收尾测试"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity

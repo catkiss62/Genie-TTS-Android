@@ -19,8 +19,11 @@ import java.nio.LongBuffer
 import java.security.MessageDigest
 import java.util.EnumSet
 import java.util.concurrent.CancellationException
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.sqrt
 
 class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
@@ -30,7 +33,6 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     private var stageDecoder: OrtSession? = null
     private var vocoder: OrtSession? = null
     private var currentConfig: EngineConfig? = null
-    private var lastModelLoadMs = 0L
     private var audioTrack: AudioTrack? = null
 
     fun readManifest(): BenchmarkManifest {
@@ -55,17 +57,32 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     }
 
     fun hasFrontendModel(root: File): Boolean {
+        return findFrontendModel(root) != null
+    }
+
+    fun frontendModelFile(root: File): File {
+        return findFrontendModel(root) ?: error("尚未导入配套的 RoBERTa 模型")
+    }
+
+    private fun findFrontendModel(root: File): File? {
         val frontend = readManifest().frontend
-        val model = File(root, frontend.roberta)
-        val marker = File(root, frontend.roberta + ".sha256")
-        return model.isFile && model.length() == frontend.robertaBytes && marker.isFile &&
-            marker.readText().trim().equals(frontend.robertaSha256, ignoreCase = true)
+        val shared = File(context.filesDir, "genie-benchmark/shared/${File(frontend.roberta).name}")
+        val base = File(context.filesDir, "genie-benchmark")
+        val candidates = linkedSetOf(shared, File(root, frontend.roberta))
+        base.listFiles()?.filter { it.isDirectory && it != root }?.forEach {
+            candidates += File(it, frontend.roberta)
+        }
+        return candidates.firstOrNull { model ->
+            val marker = File(model.parentFile, model.name + ".sha256")
+            model.isFile && model.length() == frontend.robertaBytes && marker.isFile &&
+                marker.readText().trim().equals(frontend.robertaSha256, ignoreCase = true)
+        }
     }
 
     fun importFrontendModel(root: File, uri: Uri, progress: (String) -> Unit) {
         val frontend = readManifest().frontend
-        val target = File(root, frontend.roberta)
-        val incoming = File(root, frontend.roberta + ".incoming")
+        val target = File(context.filesDir, "genie-benchmark/shared/${File(frontend.roberta).name}")
+        val incoming = File(target.parentFile, target.name + ".incoming")
         target.parentFile?.mkdirs()
         incoming.delete()
         val digest = MessageDigest.getInstance("SHA-256")
@@ -92,7 +109,7 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
             check(sha.equals(frontend.robertaSha256, ignoreCase = true)) { "模型 SHA-256 不匹配，请选择配套的 v0.3.2 文件" }
             target.delete()
             check(incoming.renameTo(target)) { "无法保存 RoBERTa 模型" }
-            File(root, frontend.roberta + ".sha256").writeText(sha)
+            File(target.parentFile, target.name + ".sha256").writeText(sha)
         } catch (error: Throwable) {
             incoming.delete()
             throw error
@@ -112,8 +129,8 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         }
     }
 
-    fun loadModels(root: File, config: EngineConfig): Long {
-        if (encoder != null && currentConfig == config) return lastModelLoadMs
+    fun loadModels(root: File, config: EngineConfig): ModelLoadInfo {
+        if (encoder != null && currentConfig == config) return ModelLoadInfo(false, 0L)
         unloadModels()
         System.gc()
         val info = readManifest()
@@ -128,13 +145,7 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
             unloadModels()
             throw error
         }
-        lastModelLoadMs = elapsedMs(start)
-        return lastModelLoadMs
-    }
-
-    fun releaseModelsForFrontend() {
-        unloadModels()
-        System.gc()
+        return ModelLoadInfo(true, elapsedMs(start))
     }
 
     private fun createSession(model: File, config: EngineConfig, isVocoder: Boolean): OrtSession {
@@ -169,21 +180,25 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         root: File,
         case: BenchmarkCase,
         preset: TextPreset,
+        modelLoad: ModelLoadInfo,
+        requestStartedNs: Long,
         shouldCancel: () -> Boolean = { false },
     ): BenchmarkResult = run(
         root, case, preset.title, preset.text, preset.text, 0L,
         "预计算 FP32 Chinese RoBERTa · ${preset.bertNonZero}/${preset.bertElements} 非零",
-        preset.tensors, null, shouldCancel
+        preset.tensors, null, modelLoad, requestStartedNs, shouldCancel
     )
 
     fun runPrepared(
         root: File,
         case: BenchmarkCase,
         prepared: PreparedText,
+        modelLoad: ModelLoadInfo,
+        requestStartedNs: Long,
         shouldCancel: () -> Boolean = { false },
     ): BenchmarkResult = run(
         root, case, "自由输入", prepared.text, prepared.normalizedText, prepared.frontendMs,
-        prepared.diagnostic, emptyList(), prepared, shouldCancel
+        prepared.diagnostic, emptyList(), prepared, modelLoad, requestStartedNs, shouldCancel
     )
 
     private fun run(
@@ -196,6 +211,8 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         frontendDiagnostic: String,
         targetTensors: List<TensorSpec>,
         prepared: PreparedText?,
+        modelLoad: ModelLoadInfo,
+        requestStartedNs: Long,
         shouldCancel: () -> Boolean,
     ): BenchmarkResult {
         val info = readManifest()
@@ -299,12 +316,17 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
 
             val total = encoderMs + firstMs + autoregressiveMs + vocoderMs
             val seconds = audio.size.toDouble() / info.sampleRate
+            val peak = audio.maxOf { abs(it).toDouble() }
+            val rms = sqrt(audio.sumOf { value -> value.toDouble() * value.toDouble() } / audio.size)
+            val clippedPercent = audio.count { abs(it) >= 0.999f }.toDouble() * 100.0 / audio.size
             return BenchmarkResult(
                 config, "完整 Chinese RoBERTa", "预设 FP32 / 自由输入 INT8；均为非零中文特征",
                 case.title, targetTitle, targetText, normalizedText, frontendMs, frontendDiagnostic,
-                lastModelLoadMs, fixtureLoadMs, encoderMs, firstMs,
+                modelLoad.loadedThisRun, modelLoad.elapsedMs, fixtureLoadMs, encoderMs, firstMs,
                 autoregressiveMs, vocoderMs, total, iterations, seconds,
                 if (seconds > 0.0) total / (seconds * 1000.0) else Double.POSITIVE_INFINITY,
+                elapsedMs(requestStartedNs), semantic.size, semantic.contentHashCode().toUInt().toString(16),
+                peak, rms, clippedPercent, case.playbackGainDb,
                 (Debug.getPss() / 1024L).toInt(), audio
             )
         } finally {
@@ -312,8 +334,13 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         }
     }
 
-    fun play(audio: FloatArray, sampleRate: Int) {
-        val pcm = ShortArray(audio.size) { (audio[it].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort() }
+    fun play(audio: FloatArray, sampleRate: Int, gainDb: Double = 0.0) {
+        val requestedGain = 10.0.pow(gainDb / 20.0)
+        val peak = audio.maxOfOrNull { abs(it).toDouble() } ?: 0.0
+        val safeGain = if (peak > 0.0) min(requestedGain, 0.98 / peak) else requestedGain
+        val pcm = ShortArray(audio.size) {
+            (audio[it].toDouble().times(safeGain).coerceIn(-1.0, 1.0) * Short.MAX_VALUE).toInt().toShort()
+        }
         playPcm(pcm, sampleRate)
     }
 
@@ -400,7 +427,6 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         encoder?.close(); firstDecoder?.close(); stageDecoder?.close(); vocoder?.close()
         encoder = null; firstDecoder = null; stageDecoder = null; vocoder = null
         currentConfig = null
-        lastModelLoadMs = 0L
     }
 
     override fun close() {

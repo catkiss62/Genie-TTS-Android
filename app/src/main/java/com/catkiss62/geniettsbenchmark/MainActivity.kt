@@ -27,7 +27,8 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
-    companion object { private const val REQUEST_ROBERTA_MODEL = 3202 }
+    companion object { private const val REQUEST_ROBERTA_MODEL = 3303 }
+
     private data class TargetState(
         val id: String,
         val title: String,
@@ -45,12 +46,12 @@ class MainActivity : Activity() {
     private lateinit var freeInput: EditText
     private lateinit var stopButton: Button
     private val worker = Executors.newSingleThreadExecutor()
-    private val history = StringBuilder()
-    private val generated = mutableMapOf<String, BenchmarkResult>()
-    private val ratings = mutableMapOf<String, String>()
     private val config = EngineConfig(BackendMode.CPU, 8)
     private var preparedRoot: File? = null
-    private lateinit var activeTarget: TargetState
+    private var selectedPreset: TextPreset? = null
+    private var lastResult: BenchmarkResult? = null
+    private var lastResultLabel: String? = null
+    private var diagnosticReport = ""
     @Volatile private var cancelRequested = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,30 +70,37 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         root.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 多台词筛选 v0.3.2"
+            text = "Genie-TTS v2.0.2\n恬豆 V2 性能收尾测试 v0.3.3"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "完整 RoBERTa · 8 个候选 · 4 类预设 · 本地自由输入 · CPU 8 线程"
+            text = "完整 RoBERTa · 5 个入选音色 · CPU 8 线程 · 模型常驻复用"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
         })
+        root.addView(TextView(this).apply {
+            text = "选择候选音色"
+            textSize = 13f
+            setTextColor(Color.DKGRAY)
+        })
         selector = Spinner(this)
         root.addView(selector, LinearLayout.LayoutParams(-1, dp(48)))
         root.addView(TextView(this).apply {
-            text = "快捷预设"
+            text = "选择台词类型"
             textSize = 13f
             setTextColor(Color.DKGRAY)
         })
         buttons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(buttons)
         freeInput = EditText(this).apply {
-            hint = "输入中文台词（建议单句 10–60 字，当前最多 80 字）"
+            hint = "自由输入中文台词（最多 80 字）"
+            setText("你好呀，今天想聊点什么？")
             minLines = 2
             maxLines = 4
+            isEnabled = false
             setTextColor(Color.rgb(35, 29, 48))
             setHintTextColor(Color.GRAY)
             setBackgroundColor(Color.WHITE)
@@ -116,34 +124,31 @@ class MainActivity : Activity() {
     private fun showInitialState() {
         try {
             val manifest = engine.readManifest()
-            activeTarget = manifest.presets.first().toState()
-            freeInput.setText(activeTarget.text)
-            manifest.presets.forEach { preset ->
-                manifest.cases.forEach { item ->
-                    val key = resultKey(preset.id, item)
-                    getPreferences(MODE_PRIVATE).getString("rating_$key", null)?.let { ratings[key] = it }
-                }
-            }
-            selector.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, manifest.cases.map { it.title })
+            selectedPreset = manifest.presets.first()
+            selector.adapter = ArrayAdapter(
+                this, android.R.layout.simple_spinner_dropdown_item, manifest.cases.map { it.title }
+            )
             selector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = showCurrent()
                 override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
             addPresetRows(manifest.presets)
+            addButton("自由输入") {
+                selectedPreset = null
+                freeInput.isEnabled = true
+                freeInput.requestFocus()
+                showCurrent("已切换到自由输入。")
+            }
             buttons.addView(freeInput, LinearLayout.LayoutParams(-1, -2).apply {
                 topMargin = dp(4)
                 bottomMargin = dp(6)
             })
             addButton("导入自由输入 RoBERTa 模型") { chooseFrontendModel() }
-            addButton("生成上方自由输入并播放") { runCustom() }
-            addButton("生成并播放当前候选（当前台词）") { runCurrent() }
-            addButton("同一候选连续生成 3 次") { runCurrentThreeTimes() }
-            addButton("播放当前候选的合成结果") { playGenerated() }
-            addButton("播放当前候选的原始录音") { playOriginal() }
-            addButton("用当前台词生成全部 8 个候选") { runAll() }
-            addRatingRow()
-            addButton("复制完整筛选报告") { copyReport() }
-            stopButton = addButton("停止当前生成") {
+            addButton("重新生成并播放") { runCurrent() }
+            addButton("播放上次合成结果") { playLastGenerated() }
+            addButton("运行自动诊断（不播放）") { runDiagnostic() }
+            addButton("复制诊断报告") { copyDiagnosticReport() }
+            stopButton = addButton("停止当前任务") {
                 cancelRequested = true
                 updateStatus("已请求停止；当前 ONNX 算子结束后会退出。")
             }.apply { isEnabled = false }
@@ -161,9 +166,9 @@ class MainActivity : Activity() {
                     text = preset.title
                     isAllCaps = false
                     setOnClickListener {
-                        activeTarget = preset.toState()
-                        freeInput.setText(preset.text)
-                        showCurrent("已选择“${preset.title}”预设。")
+                        selectedPreset = preset
+                        freeInput.isEnabled = false
+                        showCurrent("已选择“${preset.title}”。")
                     }
                 }, LinearLayout.LayoutParams(0, dp(44), 1f))
             }
@@ -171,7 +176,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun TextPreset.toState() = TargetState(id, title, text, preset = this)
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
     private fun addButton(label: String, action: () -> Unit): Button {
@@ -184,107 +188,152 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun addRatingRow() {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf("喜欢", "一般", "淘汰").forEach { rating ->
-            row.addView(Button(this).apply {
-                text = "标记$rating"
-                isAllCaps = false
-                setOnClickListener { rateCurrent(rating) }
-            }, LinearLayout.LayoutParams(0, dp(44), 1f))
-        }
-        buttons.addView(row, LinearLayout.LayoutParams(-1, dp(48)))
-    }
-
     private fun currentCase(): BenchmarkCase {
         val cases = engine.readManifest().cases
         return cases[selector.selectedItemPosition.coerceIn(cases.indices)]
     }
 
-    private fun resultKey(targetId: String, item: BenchmarkCase) = "$targetId:${item.id}"
+    private fun selectedTextTitle() = selectedPreset?.title ?: "自由输入"
+    private fun selectedText() = selectedPreset?.text ?: freeInput.text.toString()
 
     private fun showCurrent(extra: String? = null) {
         val item = currentCase()
-        val result = generated[resultKey(activeTarget.id, item)]
+        val modelReady = preparedRoot?.let { engine.hasFrontendModel(it) } == true
         status.text = buildString {
             appendLine(deviceLine())
             appendLine("当前候选：${item.title}")
             appendLine("参考台词：${item.referenceText}")
-            appendLine("当前台词：${activeTarget.title}")
-            appendLine(activeTarget.text)
-            appendLine("标记：${ratings[resultKey(activeTarget.id, item)] ?: "未标记"}")
-            appendLine("合成：${result?.let { "已生成 · ${"%.3f".format(it.audioSeconds)} 秒 · RTF ${"%.3f".format(it.coreRtf)}" } ?: "尚未生成"}")
+            if (item.playbackGainDb != 0.0) appendLine("播放响度校准：${"%+.1f".format(item.playbackGainDb)} dB")
+            appendLine("当前台词：${selectedTextTitle()}")
+            appendLine(selectedText())
+            appendLine("自由输入模型：${if (modelReady) "已导入" else "尚未导入或尚未检测"}")
+            appendLine("上次合成：${lastResultLabel ?: "无"}")
+            lastResult?.let {
+                appendLine("端到端 ${it.endToEndMs} ms · 核心 ${it.totalInferenceMs} ms · RTF ${"%.3f".format(it.coreRtf)}")
+            }
             if (extra != null) appendLine("\n$extra")
-            appendLine("\n四类预设使用精确 FP32 RoBERTa；自由输入需先导入配套 INT8 RoBERTa 文件。")
+            appendLine("\n预设使用 FP32 RoBERTa；自由输入使用导入的 INT8 RoBERTa。")
         }
     }
 
-    private fun playOriginal() {
+    private fun playLastGenerated() {
+        val result = lastResult ?: return showCurrent("还没有可以回放的合成结果。")
+        engine.play(result.audio, engine.readManifest().sampleRate, result.playbackGainDb)
+        showCurrent("正在播放上次合成结果，不会重新推理。")
+    }
+
+    private fun runCurrent() = runTask("重新生成") {
+        val started = System.nanoTime()
+        val target = prepareSelectedTarget()
         val item = currentCase()
-        val path = item.referenceAudio ?: return showCurrent("此候选没有原始录音。")
-        runCatching { engine.playReferenceAsset(path) }
-            .onSuccess { showCurrent("正在播放原始录音。") }
-            .onFailure { showCurrent("原始录音播放失败：${it.message}") }
+        val result = generate(item, target, requestStartedNs = started)
+        lastResult = result
+        lastResultLabel = "${item.title} · ${target.title}"
+        engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
+        runOnUiThread { showCurrent("已重新推理并开始播放。") }
     }
 
-    private fun playGenerated() {
-        val item = currentCase()
-        val result = generated[resultKey(activeTarget.id, item)] ?: return showCurrent("请先生成当前候选和当前台词。")
-        engine.play(result.audio, engine.readManifest().sampleRate)
-        showCurrent("正在播放合成结果。")
-    }
-
-    private fun runCurrent() = runTask("生成 ${currentCase().title}") {
-        val target = activeTarget
-        val result = generate(currentCase(), target)
-        engine.play(result.audio, engine.readManifest().sampleRate)
-        runOnUiThread { showCurrent("生成完成，正在自动播放。") }
-    }
-
-    private fun runCurrentThreeTimes() = runTask("连续生成 3 次") {
-        val item = currentCase()
-        val target = activeTarget
-        repeat(3) { index ->
-            checkCancelled()
-            postProgress(index, 3, "正在生成第 ${index + 1} 次……")
-            generate(item, target, index + 1)
-            postProgress(index + 1, 3, "第 ${index + 1} 次完成")
-        }
-        runOnUiThread { showCurrent("连续三次已完成；当前播放记录为第三次，报告保留三次数据。") }
-    }
-
-    private fun runAll() = runTask("生成全部候选") {
-        val manifest = engine.readManifest()
-        val target = activeTarget
-        appendHistory("===== 全部候选 · ${target.title} · ${timeStamp()} =====\n${deviceLine()}\n文本：${target.text}\n")
-        ensureReady()
-        manifest.cases.forEachIndexed { index, item ->
-            checkCancelled()
-            postProgress(index, manifest.cases.size, "正在生成 ${item.title}……")
-            generate(item, target)
-            postProgress(index + 1, manifest.cases.size, "${item.title} 已完成")
-        }
-        runOnUiThread { showCurrent("八个候选均已生成。切换候选即可分别播放。") }
-    }
-
-    private fun runCustom() = runTask("生成自由输入") {
-        val input = freeInput.text.toString()
+    private fun prepareSelectedTarget(): TargetState {
+        selectedPreset?.let { return TargetState(it.id, it.title, it.text, preset = it) }
         val root = ensureAssets()
-        check(engine.hasFrontendModel(root)) { "请先点击“导入自由输入 RoBERTa 模型”，选择配套的 ONNX 文件" }
-        engine.releaseModelsForFrontend()
+        check(engine.hasFrontendModel(root)) { "请先导入配套的自由输入 RoBERTa ONNX 文件" }
         engine.prepareFrontendAssets(root, ::postStatus)
-        val prepared = frontend.prepare(root, input, ::postStatus)
-        checkCancelled()
-        val target = TargetState(
+        val prepared = frontend.prepare(root, freeInput.text.toString(), ::postStatus)
+        return TargetState(
             id = "custom_${prepared.normalizedText.hashCode().toUInt().toString(16)}",
             title = "自由输入",
             text = prepared.text,
             prepared = prepared,
         )
-        activeTarget = target
-        val result = generate(currentCase(), target)
-        engine.play(result.audio, engine.readManifest().sampleRate)
-        runOnUiThread { showCurrent("自由输入生成完成，正在自动播放。") }
+    }
+
+    private fun runDiagnostic() = runTask("自动诊断") {
+        val manifest = engine.readManifest()
+        val primary = manifest.cases.first { it.id == "ref01" }
+        val neutral = manifest.presets.first { it.id == "neutral" }
+        val presetOrder = listOf(
+            neutral,
+            neutral,
+            manifest.presets.first { it.id == "question" },
+            manifest.presets.first { it.id == "comfort" },
+            manifest.presets.first { it.id == "lively" },
+        )
+        val canRunDynamic = engine.hasFrontendModel(ensureAssets())
+        val total = presetOrder.size + if (canRunDynamic) 2 else 0
+        val results = mutableListOf<Pair<String, BenchmarkResult>>()
+        engine.unloadModels()
+        frontend.closeModel()
+        frontend.clearPreparedCache()
+
+        presetOrder.forEachIndexed { index, preset ->
+            checkCancelled()
+            val label = when (index) {
+                0 -> "冷启动 · 普通闲聊"
+                1 -> "热推理 · 普通闲聊"
+                else -> "热推理 · ${preset.title}"
+            }
+            postProgress(index, total, "正在运行 $label……")
+            val target = TargetState(preset.id, preset.title, preset.text, preset = preset)
+            results += label to generate(primary, target, System.nanoTime())
+            postProgress(index + 1, total, "$label 完成")
+        }
+
+        if (canRunDynamic) {
+            val dynamicText = "今晚想吃点什么？我突然有一点期待。"
+            repeat(2) { repeatIndex ->
+                checkCancelled()
+                val position = presetOrder.size + repeatIndex
+                val label = if (repeatIndex == 0) "自由输入 · 首次前处理" else "自由输入 · 特征缓存"
+                postProgress(position, total, "正在运行 $label……")
+                val started = System.nanoTime()
+                engine.prepareFrontendAssets(ensureAssets(), ::postStatus)
+                val prepared = frontend.prepare(ensureAssets(), dynamicText, ::postStatus)
+                val target = TargetState("diagnostic_dynamic", "自由输入", prepared.text, prepared = prepared)
+                results += label to generate(primary, target, started)
+                postProgress(position + 1, total, "$label 完成")
+            }
+        }
+
+        val warmPresets = results
+            .filter { (label, _) -> label.startsWith("热推理") }
+            .map { it.second }
+        diagnosticReport = buildString {
+            appendLine("===== Genie-TTS v0.3.3 自动诊断 · ${timeStamp()} =====")
+            appendLine(deviceLine())
+            appendLine("固定音色：候选 1（日常主音色）")
+            appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
+            if (!canRunDynamic) appendLine("自由输入：未导入 RoBERTa，因此本次跳过。")
+            results.forEach { (label, result) ->
+                appendLine("\n--- $label ---")
+                append(result.report(deviceLine()))
+            }
+            if (warmPresets.isNotEmpty()) {
+                appendLine("\n===== 汇总 =====")
+                appendLine("预设热运行平均核心 RTF：${"%.3f".format(warmPresets.map { it.coreRtf }.average())}")
+                appendLine("预设热运行平均端到端等待：${warmPresets.map { it.endToEndMs }.average().toLong()} ms")
+                appendLine("峰值 PSS：约 ${results.maxOf { it.second.pssMb }} MB")
+            }
+        }
+        postStatus("自动诊断完成，共 ${results.size} 项。点击“复制诊断报告”发送给我即可。")
+    }
+
+    private fun generate(
+        item: BenchmarkCase,
+        target: TargetState,
+        requestStartedNs: Long,
+    ): BenchmarkResult {
+        val root = ensureAssets()
+        postStatus("${item.title} · ${target.title}：正在生成……")
+        val modelLoad = engine.loadModels(root, config)
+        return when {
+            target.preset != null -> engine.runPreset(
+                root, item, target.preset, modelLoad, requestStartedNs
+            ) { cancelRequested }
+            target.prepared != null -> engine.runPrepared(
+                root, item, target.prepared, modelLoad, requestStartedNs
+            ) { cancelRequested }
+            else -> error("缺少目标台词特征")
+        }
     }
 
     private fun chooseFrontendModel() {
@@ -302,63 +351,21 @@ class MainActivity : Activity() {
         val uri = data?.data ?: return
         runTask("导入 RoBERTa") {
             val root = ensureAssets()
-            engine.releaseModelsForFrontend()
+            frontend.closeModel()
+            frontend.clearPreparedCache()
             engine.importFrontendModel(root, uri, ::postStatus)
-            postStatus("RoBERTa 模型校验并导入完成；现在可以使用自由输入。")
+            runOnUiThread { showCurrent("RoBERTa 模型校验并导入完成；后续会常驻复用。") }
         }
     }
 
-    private fun generate(item: BenchmarkCase, target: TargetState, runNumber: Int? = null): BenchmarkResult {
-        val root = ensureReady()
-        postStatus("${item.title} · ${target.title}：正在生成……")
-        val result = when {
-            target.preset != null -> engine.runPreset(root, item, target.preset) { cancelRequested }
-            target.prepared != null -> engine.runPrepared(root, item, target.prepared) { cancelRequested }
-            else -> error("缺少目标台词特征")
-        }
-        generated[resultKey(target.id, item)] = result
-        appendHistory(buildString {
-            appendLine("参考：${item.title}")
-            appendLine("参考台词：${item.referenceText}")
-            append(result.report(deviceLine(), runNumber))
-        })
-        return result
+    private fun copyDiagnosticReport() {
+        if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.3.3", diagnosticReport))
+        showCurrent("自动诊断报告已复制。")
     }
 
     private fun ensureAssets(): File = preparedRoot ?: engine.prepareAssets(::postStatus).also { preparedRoot = it }
-
-    private fun ensureReady(): File {
-        val root = ensureAssets()
-        postStatus("正在加载恬豆 V2 模型（首次会较慢）……")
-        engine.loadModels(root, config)
-        return root
-    }
-
-    private fun rateCurrent(rating: String) {
-        val item = currentCase()
-        val key = resultKey(activeTarget.id, item)
-        ratings[key] = rating
-        getPreferences(MODE_PRIVATE).edit().putString("rating_$key", rating).apply()
-        appendHistory("评分：${activeTarget.title} · ${item.title} = $rating\n")
-        showCurrent("已标记为“$rating”。")
-    }
-
-    private fun copyReport() {
-        val manifest = engine.readManifest()
-        val report = buildString {
-            append(history)
-            appendLine("===== 当前预设评分汇总 =====")
-            manifest.presets.forEach { preset ->
-                appendLine(preset.title)
-                manifest.cases.forEach { item ->
-                    appendLine("${item.title}：${ratings[resultKey(preset.id, item)] ?: "未标记"}")
-                }
-            }
-        }
-        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS selection v0.3.2", report))
-        showCurrent("测试报告和评分汇总已复制。")
-    }
 
     private fun runTask(name: String, task: () -> Unit) {
         cancelRequested = false
@@ -367,20 +374,13 @@ class MainActivity : Activity() {
             try {
                 task()
             } catch (cancelled: CancellationException) {
-                appendHistory("===== $name 已停止 · ${timeStamp()} =====\n")
-                postStatus("测试已停止；已经生成的结果仍然保留。")
+                postStatus("$name 已停止。")
             } catch (error: Throwable) {
-                appendHistory("===== $name 失败 · ${timeStamp()} =====\n${error.stackTraceToString()}\n")
                 postStatus("$name 失败：${error.message}\n\n${error.stackTraceToString()}")
             } finally {
                 runOnUiThread { setBusy(false) }
             }
         }
-    }
-
-    private fun appendHistory(text: String) {
-        if (history.isNotEmpty() && !history.endsWith("\n\n")) history.appendLine()
-        history.append(text.trimEnd()).appendLine().appendLine()
     }
 
     private fun checkCancelled() {
@@ -394,14 +394,15 @@ class MainActivity : Activity() {
         progress.isIndeterminate = false
         progress.max = total
         progress.progress = done
-        updateStatus("进度：$done / $total\n$text\n\n已完成结果会保留在报告中。")
+        updateStatus("进度：$done / $total\n$text")
     }
     private fun updateStatus(text: String) { status.text = text }
+
     private fun setBusy(value: Boolean) {
         progress.visibility = if (value) View.VISIBLE else View.GONE
         if (value) progress.isIndeterminate = true
         selector.isEnabled = !value
-        freeInput.isEnabled = !value
+        freeInput.isEnabled = !value && selectedPreset == null
         fun update(view: View) {
             if (view is Button) view.isEnabled = if (::stopButton.isInitialized && view === stopButton) value else !value
             if (view is LinearLayout) for (index in 0 until view.childCount) update(view.getChildAt(index))
@@ -412,6 +413,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         cancelRequested = true
         worker.shutdownNow()
+        frontend.close()
         engine.close()
         super.onDestroy()
     }

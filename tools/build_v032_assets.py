@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the v0.3.2 multi-text audition bundle and Android Chinese frontend data."""
+"""Build the v0.3.3 final audition bundle and Android Chinese frontend data."""
 
 from __future__ import annotations
 
@@ -18,8 +18,10 @@ PRESETS = [
     ("neutral", "普通闲聊", "我刚才看到一件很有意思的事，等一下慢慢讲给你听。"),
     ("question", "疑问", "你今天过得怎么样？有没有什么特别想和我说的？"),
     ("comfort", "安慰", "没关系，你不用急着回答，我会在这里陪着你。"),
-    ("lively", "活泼", "快看快看，我发现了一个超级有趣的东西！"),
+    ("lively", "活泼", "快看，快看，我发现了一个超级有趣的东西！"),
 ]
+
+KEPT_CASE_IDS = {"ref01", "ref02", "ref04", "ref06", "ref07"}
 
 
 def write_tensor(root: Path, relative: str, name: str, array: np.ndarray) -> dict:
@@ -200,13 +202,16 @@ def main() -> None:
 
     kept_cases = []
     for case in manifest["cases"]:
-        if case["id"] == "ref03":
+        if case["id"] not in KEPT_CASE_IDS:
             continue
-        case["tensors"] = case["tensors"] + case["feature_tensors"]["roberta_verified"]
+        feature_tensors = case.get("feature_tensors", {})
+        if "roberta_verified" in feature_tensors:
+            case["tensors"] = case["tensors"] + feature_tensors["roberta_verified"]
         case.pop("feature_tensors", None)
+        case["playback_gain_db"] = 4.0 if case["id"] == "ref02" else 0.0
         kept_cases.append(case)
 
-    manifest["version"] = "genie-tts-v2.0.2-tiandou-v2-selection-v0.3.2"
+    manifest["version"] = "genie-tts-v2.0.2-tiandou-v2-final-v0.3.3"
     manifest["cases"] = kept_cases
     manifest["presets"] = presets
     manifest["frontend"] = make_frontend_data(

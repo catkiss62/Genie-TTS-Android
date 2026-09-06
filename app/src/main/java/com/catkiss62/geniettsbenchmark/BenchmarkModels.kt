@@ -49,6 +49,7 @@ data class BenchmarkCase(
     val tensors: List<TensorSpec>,
     val referenceText: String? = null,
     val referenceAudio: String? = null,
+    val playbackGainDb: Double = 0.0,
     val featureTensors: Map<String, List<TensorSpec>> = emptyMap(),
 )
 
@@ -65,6 +66,8 @@ data class EngineConfig(val backend: BackendMode, val threads: Int) {
             else -> "${backend.displayName} ${threads}线程"
         }
 }
+
+data class ModelLoadInfo(val loadedThisRun: Boolean, val elapsedMs: Long)
 
 data class BenchmarkManifest(
     val version: String,
@@ -132,6 +135,7 @@ data class BenchmarkManifest(
                     item.getString("id"), item.getString("title"), item.getString("text"), tensors(item, "tensors"),
                     item.optString("reference_text").takeIf { it.isNotBlank() },
                     item.optString("reference_audio").takeIf { it.isNotBlank() },
+                    item.optDouble("playback_gain_db", 0.0),
                 )
             }
             return BenchmarkManifest(
@@ -147,13 +151,16 @@ data class BenchmarkManifest(
 data class BenchmarkResult(
     val config: EngineConfig, val featureModeTitle: String, val featureDescription: String,
     val caseTitle: String, val targetTitle: String, val text: String, val normalizedText: String,
-    val frontendMs: Long, val frontendDiagnostic: String, val modelLoadMs: Long, val fixtureLoadMs: Long,
+    val frontendMs: Long, val frontendDiagnostic: String, val modelLoadedThisRun: Boolean,
+    val modelLoadMs: Long, val fixtureLoadMs: Long,
     val encoderMs: Long, val firstDecoderMs: Long, val autoregressiveMs: Long, val vocoderMs: Long,
     val totalInferenceMs: Long, val decoderIterations: Int, val audioSeconds: Double, val coreRtf: Double,
-    val pssMb: Int, val audio: FloatArray,
+    val endToEndMs: Long, val semanticTokens: Int, val semanticHash: String,
+    val audioPeak: Double, val audioRms: Double, val clippedPercent: Double,
+    val playbackGainDb: Double, val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android 多台词筛选 v0.3.2")
+        appendLine("Genie-TTS Android 性能收尾测试 v0.3.3")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
         appendLine("中文特征：$featureModeTitle")
@@ -163,15 +170,23 @@ data class BenchmarkResult(
         appendLine("文本：$text")
         if (normalizedText != text) appendLine("规范化文本：$normalizedText")
         appendLine("中文前处理：${frontendMs} ms · $frontendDiagnostic")
-        appendLine("本配置模型加载：${modelLoadMs} ms（不计入核心推理）")
+        if (modelLoadedThisRun) {
+            appendLine("本轮模型状态：冷加载 ${modelLoadMs} ms（不计入核心推理）")
+        } else {
+            appendLine("本轮模型状态：复用已加载模型")
+        }
         appendLine("测试张量读取：${fixtureLoadMs} ms")
         appendLine("T2S Encoder：${encoderMs} ms")
         appendLine("首步 Decoder：${firstDecoderMs} ms")
         appendLine("自回归 Decoder：${autoregressiveMs} ms / $decoderIterations 次")
         appendLine("VITS：${vocoderMs} ms")
         appendLine("核心推理：${totalInferenceMs} ms")
+        appendLine("端到端等待：${endToEndMs} ms")
         appendLine("音频时长：${"%.3f".format(audioSeconds)} s")
         appendLine("RTF：${"%.3f".format(coreRtf)}（小于 1 才快于实时）")
+        appendLine("语义序列：$semanticTokens tokens · $semanticHash")
+        appendLine("波形：峰值 ${"%.4f".format(audioPeak)} · RMS ${"%.4f".format(audioRms)} · 近削波 ${"%.4f".format(clippedPercent)}%")
+        if (playbackGainDb != 0.0) appendLine("播放增益：${"%+.1f".format(playbackGainDb)} dB（仅播放，不改变推理）")
         appendLine("PSS：约 $pssMb MB")
     }
 }
