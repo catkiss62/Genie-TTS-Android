@@ -3,7 +3,7 @@
     <application
         android:allowBackup="false"
         android:extractNativeLibs="true"
-        android:label="Genie TTS 性能测试"
+        android:label="Genie TTS 恬豆音色测试"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity
@@ -17,4 +17,3 @@
         </activity>
     </application>
 </manifest>
-
