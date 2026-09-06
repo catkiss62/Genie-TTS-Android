@@ -27,7 +27,16 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
-    companion object { private const val REQUEST_ROBERTA_MODEL = 3303 }
+    companion object {
+        private const val REQUEST_ROBERTA_MODEL = 3303
+        private val LONG_STREAM_TEXT = """
+            刚才安静下来的时候，我突然想到了一件很有意思的事。我们每天都会遇到很多细小的瞬间，有些当时觉得普通，过一会儿再想，却会发现它们其实很值得记住。比如路边刚亮起来的灯，窗外突然吹过的一阵风，或者一句没有准备、却刚好让人笑出来的话。
+            如果把这些事情都认真收集起来，也许普通的一天就会变得很不一样。我想先把今天发生的事情慢慢讲给你听，然后再听听你的版本。你不需要一次说完，想到哪里就说到哪里；就算中途停下来也没关系，我会顺着刚才的话继续等你。
+            要是以后我们积攒了很多这样的片段，我希望偶尔能把它们重新翻出来。也许是一次没有结果的争论，也许是半夜突然聊到的怪问题，也可能只是你随口说过喜欢某种味道。过了很久再提起来，应该会有一种原来我们已经一起走了这么远的感觉。
+            不过现在先不想那么远。你今天有没有遇到什么想吐槽的事情？开心的、离谱的、无聊的都可以。如果实在想不到，也可以从现在最想吃什么开始。反正话题不用特别郑重，我们可以一边乱聊，一边看它最后会跑到哪里去。
+            我已经准备好认真听了，但也不保证一直老老实实。要是发现哪里特别好玩，我可能会忍不住插一句；要是你故意卖关子，我也可能追着问到底。总之，接下来的时间不用赶，我们慢慢说。
+        """.trimIndent().replace("\n", "")
+    }
 
     private data class TargetState(
         val id: String,
@@ -35,6 +44,14 @@ class MainActivity : Activity() {
         val text: String,
         val preset: TextPreset? = null,
         val prepared: PreparedText? = null,
+    )
+
+    private data class StreamSegmentRun(
+        val index: Int,
+        val text: String,
+        val result: BenchmarkResult,
+        val readyAfterStartMs: Long,
+        val bufferMarginMs: Long?,
     )
 
     private lateinit var engine: GenieBenchmarkEngine
@@ -52,6 +69,8 @@ class MainActivity : Activity() {
     private var lastResult: BenchmarkResult? = null
     private var lastResultLabel: String? = null
     private var diagnosticReport = ""
+    private var longStreamReport = ""
+    @Volatile private var activeStream: StreamingAudioPlayer? = null
     @Volatile private var cancelRequested = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,13 +89,13 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         root.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 性能收尾测试 v0.3.3"
+            text = "Genie-TTS v2.0.2\n恬豆 V2 长文本流式测试 v0.4.0"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "完整 RoBERTa · 5 个入选音色 · CPU 8 线程 · 模型常驻复用"
+            text = "完整 RoBERTa · 5 个入选音色 · CPU 8 线程 · 约 500 字分段流式"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
@@ -146,10 +165,13 @@ class MainActivity : Activity() {
             addButton("导入自由输入 RoBERTa 模型") { chooseFrontendModel() }
             addButton("重新生成并播放") { runCurrent() }
             addButton("播放上次合成结果") { playLastGenerated() }
+            addButton("运行约 500 字分段流式测试") { runLongStreamTest() }
+            addButton("复制长文本流式报告") { copyLongStreamReport() }
             addButton("运行自动诊断（不播放）") { runDiagnostic() }
             addButton("复制诊断报告") { copyDiagnosticReport() }
             stopButton = addButton("停止当前任务") {
                 cancelRequested = true
+                activeStream?.cancel()
                 updateStatus("已请求停止；当前 ONNX 算子结束后会退出。")
             }.apply { isEnabled = false }
             showCurrent()
@@ -212,7 +234,7 @@ class MainActivity : Activity() {
                 appendLine("端到端 ${it.endToEndMs} ms · 核心 ${it.totalInferenceMs} ms · RTF ${"%.3f".format(it.coreRtf)}")
             }
             if (extra != null) appendLine("\n$extra")
-            appendLine("\n预设使用 FP32 RoBERTa；自由输入使用导入的 INT8 RoBERTa。")
+            appendLine("\n预设使用 FP32 RoBERTa；自由输入和长文本使用导入的 INT8 RoBERTa。")
         }
     }
 
@@ -231,6 +253,103 @@ class MainActivity : Activity() {
         lastResultLabel = "${item.title} · ${target.title}"
         engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
         runOnUiThread { showCurrent("已重新推理并开始播放。") }
+    }
+
+    private fun runLongStreamTest() = runTask("长文本流式测试") {
+        val root = ensureAssets()
+        check(engine.hasFrontendModel(root)) { "请先导入配套的自由输入 RoBERTa ONNX 文件" }
+        engine.stopPlayback()
+        val item = currentCase()
+        val segments = ChineseTextSegmenter.split(LONG_STREAM_TEXT)
+        val testStartedNs = System.nanoTime()
+        val runs = ArrayList<StreamSegmentRun>(segments.size)
+        var player: StreamingAudioPlayer? = null
+        var playbackStartedNs = 0L
+        var queuedAudioMs = 0L
+
+        frontend.clearPreparedCache()
+        engine.prepareFrontendAssets(root, ::postStatus)
+        try {
+            segments.forEachIndexed { index, text ->
+                checkCancelled()
+                postProgress(index, segments.size, "第 ${index + 1}/${segments.size} 段：正在进行中文前处理与推理……")
+                val segmentStartedNs = System.nanoTime()
+                val prepared = frontend.prepare(root, text, ::postStatus)
+                val modelLoad = engine.loadModels(root, config)
+                val result = engine.runPrepared(
+                    root, item, prepared, modelLoad, segmentStartedNs
+                ) { cancelRequested }
+                val readyNs = System.nanoTime()
+
+                val margin = if (index == 0) {
+                    player = StreamingAudioPlayer(engine.readManifest().sampleRate, item.playbackGainDb)
+                    activeStream = player
+                    player!!.enqueue(result.audio)
+                    playbackStartedNs = player!!.awaitStarted()
+                    null
+                } else {
+                    val elapsedPlaybackMs = (readyNs - playbackStartedNs) / 1_000_000L
+                    (queuedAudioMs - elapsedPlaybackMs).also { player!!.enqueue(result.audio) }
+                }
+                queuedAudioMs += (result.audioSeconds * 1000.0).toLong()
+                runs += StreamSegmentRun(
+                    index + 1, text, result.copy(audio = FloatArray(0)),
+                    (readyNs - testStartedNs) / 1_000_000L, margin
+                )
+                postProgress(
+                    index + 1, segments.size,
+                    "第 ${index + 1}/${segments.size} 段已进入播放队列" +
+                        (margin?.let { " · 缓冲余量 ${it} ms" } ?: " · 首段已开播")
+                )
+            }
+
+            checkCancelled()
+            val generationFinishedNs = System.nanoTime()
+            postStatus("全部 ${segments.size} 段已经生成，正在等待流式播放结束……")
+            player!!.finish()
+            val playback = player!!.awaitCompletion()
+            checkCancelled()
+
+            val totalCoreMs = runs.sumOf { it.result.totalInferenceMs }
+            val totalFrontendMs = runs.sumOf { it.result.frontendMs }
+            val totalAudioSeconds = runs.sumOf { it.result.audioSeconds }
+            val margins = runs.mapNotNull { it.bufferMarginMs }
+            val lateSegments = margins.count { it < 0L }
+            val firstAudioWaitMs = (playback.playbackStartedNs - testStartedNs) / 1_000_000L
+            val generationWallMs = (generationFinishedNs - testStartedNs) / 1_000_000L
+            val playbackWallMs = (playback.playbackFinishedNs - playback.playbackStartedNs) / 1_000_000L
+            val totalWallMs = (playback.playbackFinishedNs - testStartedNs) / 1_000_000L
+            val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
+
+            longStreamReport = buildString {
+                appendLine("===== Genie-TTS v0.4.0 长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine(deviceLine())
+                appendLine("音色：${item.title} · ${config.label}")
+                appendLine("原文：${LONG_STREAM_TEXT.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
+                appendLine("策略：首段生成后立即播放；播放期间按顺序生成后续段；采样参数未修改。")
+                appendLine("首段开播等待：$firstAudioWaitMs ms")
+                appendLine("全部分段生成完成：$generationWallMs ms")
+                appendLine("合计音频：${"%.2f".format(totalAudioSeconds)} s · 播放阶段：${playbackWallMs} ms")
+                appendLine("合计核心推理：$totalCoreMs ms · 聚合 RTF：${"%.3f".format(aggregateRtf)}")
+                appendLine("合计中文前处理：$totalFrontendMs ms")
+                appendLine("最小缓冲余量：${margins.minOrNull()?.let { "$it ms" } ?: "无"} · 迟到分段：$lateSegments/${margins.size}")
+                appendLine("AudioTrack underrun：${playback.underrunCount} · 峰值 PSS：约 ${runs.maxOf { it.result.pssMb }} MB")
+                appendLine("从点击到播放完成：$totalWallMs ms")
+                runs.forEach { run ->
+                    appendLine("\n--- 第 ${run.index}/${runs.size} 段 ---")
+                    appendLine("文本：${run.text}")
+                    appendLine("字符：${run.text.length} · 前处理：${run.result.frontendMs} ms · 核心：${run.result.totalInferenceMs} ms")
+                    appendLine("音频：${"%.2f".format(run.result.audioSeconds)} s · RTF：${"%.3f".format(run.result.coreRtf)} · Decoder：${run.result.decoderIterations} 次")
+                    appendLine("生成就绪：点击后 ${run.readyAfterStartMs} ms · 入队前缓冲余量：${run.bufferMarginMs?.let { "$it ms" } ?: "首段"}")
+                    appendLine("语义：${run.result.semanticTokens} tokens · ${run.result.semanticHash} · PSS：约 ${run.result.pssMb} MB")
+                }
+            }
+            postStatus("约 500 字流式测试完成。请确认播放中有没有停顿，再复制长文本流式报告发给我。")
+        } finally {
+            activeStream = null
+            if (cancelRequested) player?.cancel()
+            player?.close()
+        }
     }
 
     private fun prepareSelectedTarget(): TargetState {
@@ -298,7 +417,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.3.3 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.4.0 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             appendLine("固定音色：候选 1（日常主音色）")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
@@ -361,8 +480,15 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.3.3", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.4.0", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
+    }
+
+    private fun copyLongStreamReport() {
+        if (longStreamReport.isBlank()) return showCurrent("请先运行一次约 500 字分段流式测试。")
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.4.0", longStreamReport))
+        showCurrent("长文本流式报告已复制。")
     }
 
     private fun ensureAssets(): File = preparedRoot ?: engine.prepareAssets(::postStatus).also { preparedRoot = it }
@@ -412,6 +538,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         cancelRequested = true
+        activeStream?.cancel()
         worker.shutdownNow()
         frontend.close()
         engine.close()

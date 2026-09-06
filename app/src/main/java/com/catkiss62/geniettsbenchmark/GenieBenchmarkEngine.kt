@@ -383,8 +383,7 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     }
 
     private fun playPcm(pcm: ShortArray, sampleRate: Int) {
-        audioTrack?.runCatching { stop() }
-        audioTrack?.release()
+        stopPlayback()
         val minBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         audioTrack = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
@@ -394,6 +393,12 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
             .build()
         audioTrack!!.write(pcm, 0, pcm.size)
         audioTrack!!.play()
+    }
+
+    fun stopPlayback() {
+        audioTrack?.runCatching { stop() }
+        audioTrack?.release()
+        audioTrack = null
     }
 
     private fun readTensor(root: File, spec: TensorSpec): OnnxTensor {
@@ -430,7 +435,7 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     }
 
     override fun close() {
-        audioTrack?.release()
+        stopPlayback()
         unloadModels()
     }
 }
