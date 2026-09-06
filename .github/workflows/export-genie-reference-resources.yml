@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      GRADLE_USER_HOME: ${{ runner.temp }}/genie-gradle-user-home
+      GRADLE_USER_HOME: /home/runner/work/_temp/genie-gradle-user-home
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
