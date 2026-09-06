@@ -1,0 +1,52 @@
+name: Export public Genie reference resources
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/export-genie-reference-resources.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HF_HUB_DISABLE_XET: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install downloader
+        run: pip install "huggingface_hub<2"
+      - name: Download public reference resources
+        run: |
+          python - <<'PY'
+          from huggingface_hub import hf_hub_download
+          from pathlib import Path
+          files = [
+              "GenieData/G2P/ChineseG2P/opencpop-strict.txt",
+              "GenieData/G2P/ChineseG2P/polyphonic.pickle",
+              "GenieData/chinese-hubert-base/chinese-hubert-base.onnx",
+              "GenieData/chinese-hubert-base/chinese-hubert-base_weights_fp16.bin",
+          ]
+          out = Path("public-genie-data")
+          for name in files:
+              source = Path(hf_hub_download(
+                  repo_id="High-Logic/Genie",
+                  repo_type="model",
+                  filename=name,
+                  local_dir=out,
+              ))
+              print(source, source.stat().st_size)
+          PY
+      - name: Upload public reference resources
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-genie-reference-resources
+          path: public-genie-data/GenieData
+          retention-days: 1
+          compression-level: 0
