@@ -53,11 +53,11 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Genie-TTS-Android-Benchmark-v0.1.1.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk Genie-TTS-Android-Benchmark-v0.2.0.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Genie-TTS-Android-Benchmark-v0.1.1
-          path: Genie-TTS-Android-Benchmark-v0.1.1.apk
+          name: Genie-TTS-Android-Benchmark-v0.2.0
+          path: Genie-TTS-Android-Benchmark-v0.2.0.apk
           retention-days: 3
           compression-level: 6
