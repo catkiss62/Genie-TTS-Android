@@ -29,6 +29,9 @@ data class FrontendSpec(
     val maxPhraseChars: Int,
     val bertDim: Int,
     val quantization: String,
+    val robertaBytes: Long,
+    val robertaSha256: String,
+    val robertaExternal: Boolean,
 )
 data class PreparedText(
     val text: String,
@@ -118,7 +121,9 @@ data class BenchmarkManifest(
                 frontendObject.getString("roberta"), frontendObject.getString("vocab"),
                 frontendObject.getString("char_phones"), frontendObject.getString("phrase_phones"),
                 frontendObject.getString("punctuation_ids"), frontendObject.getInt("max_phrase_chars"),
-                frontendObject.getInt("bert_dim"), frontendObject.getString("quantization")
+                frontendObject.getInt("bert_dim"), frontendObject.getString("quantization"),
+                frontendObject.getLong("roberta_bytes"), frontendObject.getString("roberta_sha256"),
+                frontendObject.getBoolean("roberta_external")
             )
             val caseArray = root.getJSONArray("cases")
             val cases = List(caseArray.length()) { index ->

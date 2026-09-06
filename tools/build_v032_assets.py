@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pickle
@@ -37,6 +38,14 @@ def write_tsv(path: Path, rows) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as stream:
         for row in rows:
             stream.write("\t".join(str(value) for value in row) + "\n")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def remove_unreferenced_generated_assets(root: Path, manifest: dict) -> None:
@@ -137,7 +146,7 @@ def make_frontend_data(root: Path, genie_data: Path, g2pm_dir: Path, quantized_r
             print(f"mobile lexicon: {index}/{len(direct_words)}")
     write_tsv(frontend / "char_phones.tsv", direct_char_rows)
     write_tsv(frontend / "phrase_phones.tsv", direct_phrase_rows)
-    shutil.copyfile(quantized_roberta, frontend / "chinese_roberta_int8.onnx")
+    roberta_sha256 = sha256_file(quantized_roberta)
 
     return {
         "roberta": "frontend/chinese_roberta_int8.onnx",
@@ -148,6 +157,9 @@ def make_frontend_data(root: Path, genie_data: Path, g2pm_dir: Path, quantized_r
         "max_phrase_chars": max_phrase_chars,
         "bert_dim": 1024,
         "quantization": "dynamic-int8-per-channel",
+        "roberta_bytes": quantized_roberta.stat().st_size,
+        "roberta_sha256": roberta_sha256,
+        "roberta_external": True,
     }
 
 

@@ -3,6 +3,7 @@ package com.catkiss62.geniettsbenchmark
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -26,6 +27,7 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
+    companion object { private const val REQUEST_ROBERTA_MODEL = 3202 }
     private data class TargetState(
         val id: String,
         val title: String,
@@ -132,6 +134,7 @@ class MainActivity : Activity() {
                 topMargin = dp(4)
                 bottomMargin = dp(6)
             })
+            addButton("导入自由输入 RoBERTa 模型") { chooseFrontendModel() }
             addButton("生成上方自由输入并播放") { runCustom() }
             addButton("生成并播放当前候选（当前台词）") { runCurrent() }
             addButton("同一候选连续生成 3 次") { runCurrentThreeTimes() }
@@ -212,7 +215,7 @@ class MainActivity : Activity() {
             appendLine("标记：${ratings[resultKey(activeTarget.id, item)] ?: "未标记"}")
             appendLine("合成：${result?.let { "已生成 · ${"%.3f".format(it.audioSeconds)} 秒 · RTF ${"%.3f".format(it.coreRtf)}" } ?: "尚未生成"}")
             if (extra != null) appendLine("\n$extra")
-            appendLine("\n四类预设使用精确 FP32 RoBERTa；自由输入使用手机端 INT8 RoBERTa。")
+            appendLine("\n四类预设使用精确 FP32 RoBERTa；自由输入需先导入配套 INT8 RoBERTa 文件。")
         }
     }
 
@@ -267,6 +270,7 @@ class MainActivity : Activity() {
     private fun runCustom() = runTask("生成自由输入") {
         val input = freeInput.text.toString()
         val root = ensureAssets()
+        check(engine.hasFrontendModel(root)) { "请先点击“导入自由输入 RoBERTa 模型”，选择配套的 ONNX 文件" }
         engine.releaseModelsForFrontend()
         engine.prepareFrontendAssets(root, ::postStatus)
         val prepared = frontend.prepare(root, input, ::postStatus)
@@ -281,6 +285,27 @@ class MainActivity : Activity() {
         val result = generate(currentCase(), target)
         engine.play(result.audio, engine.readManifest().sampleRate)
         runOnUiThread { showCurrent("自由输入生成完成，正在自动播放。") }
+    }
+
+    private fun chooseFrontendModel() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        startActivityForResult(intent, REQUEST_ROBERTA_MODEL)
+    }
+
+    @Deprecated("Legacy activity result is sufficient for this single-file test app")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_ROBERTA_MODEL || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        runTask("导入 RoBERTa") {
+            val root = ensureAssets()
+            engine.releaseModelsForFrontend()
+            engine.importFrontendModel(root, uri, ::postStatus)
+            postStatus("RoBERTa 模型校验并导入完成；现在可以使用自由输入。")
+        }
     }
 
     private fun generate(item: BenchmarkCase, target: TargetState, runNumber: Int? = null): BenchmarkResult {

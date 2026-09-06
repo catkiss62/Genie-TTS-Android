@@ -1,6 +1,7 @@
 package com.catkiss62.geniettsbenchmark
 
 import android.content.Context
+import android.net.Uri
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -15,6 +16,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
+import java.security.MessageDigest
 import java.util.EnumSet
 import java.util.concurrent.CancellationException
 import kotlin.math.max
@@ -47,9 +49,54 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     fun prepareFrontendAssets(root: File, progress: (String) -> Unit) {
         val frontend = readManifest().frontend
         copyAssets(root, listOf(
-            frontend.roberta, frontend.vocab, frontend.charPhones,
+            frontend.vocab, frontend.charPhones,
             frontend.phrasePhones, frontend.punctuationIds
         ), progress)
+    }
+
+    fun hasFrontendModel(root: File): Boolean {
+        val frontend = readManifest().frontend
+        val model = File(root, frontend.roberta)
+        val marker = File(root, frontend.roberta + ".sha256")
+        return model.isFile && model.length() == frontend.robertaBytes && marker.isFile &&
+            marker.readText().trim().equals(frontend.robertaSha256, ignoreCase = true)
+    }
+
+    fun importFrontendModel(root: File, uri: Uri, progress: (String) -> Unit) {
+        val frontend = readManifest().frontend
+        val target = File(root, frontend.roberta)
+        val incoming = File(root, frontend.roberta + ".incoming")
+        target.parentFile?.mkdirs()
+        incoming.delete()
+        val digest = MessageDigest.getInstance("SHA-256")
+        var copied = 0L
+        try {
+            val input = context.contentResolver.openInputStream(uri) ?: error("无法读取所选模型文件")
+            input.buffered().use { source ->
+                incoming.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(1024 * 1024)
+                    while (true) {
+                        val count = source.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        digest.update(buffer, 0, count)
+                        copied += count
+                        if (copied % (32L * 1024L * 1024L) < count) {
+                            progress("正在导入 RoBERTa：${copied / 1024L / 1024L} MB")
+                        }
+                    }
+                }
+            }
+            val sha = digest.digest().joinToString("") { "%02x".format(it) }
+            check(copied == frontend.robertaBytes) { "模型大小不匹配：$copied / ${frontend.robertaBytes}" }
+            check(sha.equals(frontend.robertaSha256, ignoreCase = true)) { "模型 SHA-256 不匹配，请选择配套的 v0.3.2 文件" }
+            target.delete()
+            check(incoming.renameTo(target)) { "无法保存 RoBERTa 模型" }
+            File(root, frontend.roberta + ".sha256").writeText(sha)
+        } catch (error: Throwable) {
+            incoming.delete()
+            throw error
+        }
     }
 
     private fun copyAssets(root: File, files: List<String>, progress: (String) -> Unit) {
