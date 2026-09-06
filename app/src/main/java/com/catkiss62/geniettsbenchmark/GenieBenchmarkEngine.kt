@@ -9,9 +9,12 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
+import ai.onnxruntime.providers.NNAPIFlags
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.EnumSet
+import java.util.concurrent.CancellationException
 import kotlin.math.max
 import kotlin.math.min
 
@@ -22,6 +25,7 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     private var firstDecoder: OrtSession? = null
     private var stageDecoder: OrtSession? = null
     private var vocoder: OrtSession? = null
+    private var currentConfig: EngineConfig? = null
     private var lastModelLoadMs = 0L
     private var audioTrack: AudioTrack? = null
 
@@ -47,108 +51,147 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         return root
     }
 
-    fun loadModels(root: File, threads: Int = min(4, Runtime.getRuntime().availableProcessors())): Long {
-        if (encoder != null) return lastModelLoadMs
+    fun loadModels(root: File, config: EngineConfig): Long {
+        if (encoder != null && currentConfig == config) return lastModelLoadMs
+        unloadModels()
+        System.gc()
         val info = readManifest()
-        val options = OrtSession.SessionOptions().apply {
-            setIntraOpNumThreads(max(1, threads))
-            setInterOpNumThreads(1)
-            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-        }
         val start = System.nanoTime()
         try {
-            encoder = env.createSession(File(root, info.models.getValue("encoder")).absolutePath, options)
-            firstDecoder = env.createSession(File(root, info.models.getValue("first_decoder")).absolutePath, options)
-            stageDecoder = env.createSession(File(root, info.models.getValue("stage_decoder")).absolutePath, options)
-            vocoder = env.createSession(File(root, info.models.getValue("vocoder")).absolutePath, options)
-        } finally {
-            options.close()
+            encoder = createSession(File(root, info.models.getValue("encoder")), config, false)
+            firstDecoder = createSession(File(root, info.models.getValue("first_decoder")), config, false)
+            stageDecoder = createSession(File(root, info.models.getValue("stage_decoder")), config, false)
+            vocoder = createSession(File(root, info.models.getValue("vocoder")), config, true)
+            currentConfig = config
+        } catch (error: Throwable) {
+            unloadModels()
+            throw error
         }
         lastModelLoadMs = elapsedMs(start)
         return lastModelLoadMs
     }
 
-    fun run(root: File, case: BenchmarkCase): BenchmarkResult {
+    private fun createSession(model: File, config: EngineConfig, isVocoder: Boolean): OrtSession {
+        val options = OrtSession.SessionOptions().apply {
+            setInterOpNumThreads(1)
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            when (config.backend) {
+                BackendMode.CPU -> setIntraOpNumThreads(max(1, config.threads))
+                BackendMode.XNNPACK -> {
+                    // XNNPACK owns its worker pool. Keeping ORT's own pool at one thread avoids
+                    // two thread pools competing for the same mobile CPU cores.
+                    setIntraOpNumThreads(1)
+                    addConfigEntry("session.intra_op.allow_spinning", "0")
+                    addXnnpack(mapOf("intra_op_num_threads" to max(1, config.threads).toString()))
+                }
+                BackendMode.NNAPI_VITS -> {
+                    setIntraOpNumThreads(max(1, config.threads))
+                    if (isVocoder) {
+                        addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED))
+                    }
+                }
+            }
+        }
+        return try {
+            env.createSession(model.absolutePath, options)
+        } finally {
+            options.close()
+        }
+    }
+
+    fun run(root: File, case: BenchmarkCase, shouldCancel: () -> Boolean = { false }): BenchmarkResult {
         val info = readManifest()
         checkNotNull(encoder) { "请先加载模型" }
+        val config = checkNotNull(currentConfig) { "缺少当前推理配置" }
+        checkCancelled(shouldCancel)
         val specs = (info.sharedTensors + case.tensors).associateBy { it.name }
         val fixtureStart = System.nanoTime()
         val loadedInputs = specs.mapValues { readTensor(root, it.value) }
         val fixtureLoadMs = elapsedMs(fixtureStart)
         fun tensor(name: String): OnnxTensor = loadedInputs.getValue(name)
+        try {
+            checkCancelled(shouldCancel)
+            val encoderInputs = linkedMapOf<String, OnnxTensor>()
+            info.encoderInputNames.forEach { encoderInputs[it] = tensor(it) }
+            val encoderStart = System.nanoTime()
+            val encoderResult = encoder!!.run(encoderInputs)
+            val encoderMs = elapsedMs(encoderStart)
+            val firstInputs = linkedMapOf<String, OnnxTensor>()
+            info.firstStageInputNames.forEachIndexed { index, name -> firstInputs[name] = encoderResult.get(index) as OnnxTensor }
+            checkCancelled(shouldCancel)
+            val firstStart = System.nanoTime()
+            var decoderResult = firstDecoder!!.run(firstInputs)
+            val firstMs = elapsedMs(firstStart)
+            encoderResult.close()
 
-        val encoderInputs = linkedMapOf<String, OnnxTensor>()
-        info.encoderInputNames.forEach { encoderInputs[it] = tensor(it) }
-        val encoderStart = System.nanoTime()
-        val encoderResult = encoder!!.run(encoderInputs)
-        val encoderMs = elapsedMs(encoderStart)
-        val firstInputs = linkedMapOf<String, OnnxTensor>()
-        info.firstStageInputNames.forEachIndexed { index, name -> firstInputs[name] = encoderResult.get(index) as OnnxTensor }
-        val firstStart = System.nanoTime()
-        var decoderResult = firstDecoder!!.run(firstInputs)
-        val firstMs = elapsedMs(firstStart)
-        encoderResult.close()
-
-        val autoregressiveStart = System.nanoTime()
-        var loopIndex = 0
-        var iterations = 0
-        var stageOutputsIncludeStopCondition = false
-        while (loopIndex < 500) {
-            val stageInputs = linkedMapOf<String, OnnxTensor>()
-            info.stageInputNames.forEachIndexed { index, name ->
-                // The first decoder returns [y, y_emb, *present_key_values], while every
-                // stage decoder call returns [y, y_emb, stop_condition, *present_key_values].
-                // stop_condition is bool and must not be fed back into the float cache input.
-                val outputIndex = if (stageOutputsIncludeStopCondition && index >= 2) index + 1 else index
-                stageInputs[name] = decoderResult.get(outputIndex) as OnnxTensor
+            val autoregressiveStart = System.nanoTime()
+            var loopIndex = 0
+            var iterations = 0
+            var stageOutputsIncludeStopCondition = false
+            while (loopIndex < 500) {
+                checkCancelled(shouldCancel)
+                val stageInputs = linkedMapOf<String, OnnxTensor>()
+                info.stageInputNames.forEachIndexed { index, name ->
+                    // The first decoder returns [y, y_emb, *present_key_values], while every
+                    // stage decoder call returns [y, y_emb, stop_condition, *present_key_values].
+                    // stop_condition is bool and must not be fed back into the float cache input.
+                    val outputIndex = if (stageOutputsIncludeStopCondition && index >= 2) index + 1 else index
+                    stageInputs[name] = decoderResult.get(outputIndex) as OnnxTensor
+                }
+                val next = stageDecoder!!.run(stageInputs)
+                decoderResult.close()
+                decoderResult = next
+                iterations += 1
+                if (tensorIsTrue(decoderResult.get(2))) break
+                stageOutputsIncludeStopCondition = true
+                loopIndex += 1
             }
-            val next = stageDecoder!!.run(stageInputs)
+            val autoregressiveMs = elapsedMs(autoregressiveStart)
+
+            val yTensor = decoderResult.get(0) as OnnxTensor
+            val yInfo = yTensor.info as TensorInfo
+            val yValues = LongArray(elementCount(yInfo.shape))
+            yTensor.longBuffer.get(yValues)
+            if (yValues.isNotEmpty()) yValues[yValues.lastIndex] = 0L
+            val requested = if (loopIndex == 0) yValues.size else loopIndex
+            val semanticCount = min(max(1, requested), yValues.size)
+            val semantic = yValues.copyOfRange(yValues.size - semanticCount, yValues.size)
+            val semanticTensor = OnnxTensor.createTensor(
+                env, java.nio.LongBuffer.wrap(semantic), longArrayOf(1, 1, semanticCount.toLong())
+            )
             decoderResult.close()
-            decoderResult = next
-            iterations += 1
-            if (tensorIsTrue(decoderResult.get(2))) break
-            stageOutputsIncludeStopCondition = true
-            loopIndex += 1
+
+            checkCancelled(shouldCancel)
+            val vocoderInputs = linkedMapOf<String, OnnxTensor>()
+            info.vocoderInputNames.forEach { name ->
+                vocoderInputs[name] = if (name == "pred_semantic") semanticTensor else tensor(name)
+            }
+            val vocoderStart = System.nanoTime()
+            val audioResult = try {
+                vocoder!!.run(vocoderInputs)
+            } finally {
+                semanticTensor.close()
+            }
+            val vocoderMs = elapsedMs(vocoderStart)
+
+            val audioTensor = audioResult.get(0) as OnnxTensor
+            val audioInfo = audioTensor.info as TensorInfo
+            val audio = FloatArray(elementCount(audioInfo.shape))
+            audioTensor.floatBuffer.get(audio)
+            audioResult.close()
+            check(audio.isNotEmpty() && audio.all { it.isFinite() }) { "VITS 输出了无效音频" }
+
+            val total = encoderMs + firstMs + autoregressiveMs + vocoderMs
+            val seconds = audio.size.toDouble() / info.sampleRate
+            return BenchmarkResult(
+                config, case.title, case.text, lastModelLoadMs, fixtureLoadMs, encoderMs, firstMs,
+                autoregressiveMs, vocoderMs, total, iterations, seconds,
+                if (seconds > 0.0) total / (seconds * 1000.0) else Double.POSITIVE_INFINITY,
+                (Debug.getPss() / 1024L).toInt(), audio
+            )
+        } finally {
+            loadedInputs.values.forEach { runCatching { it.close() } }
         }
-        val autoregressiveMs = elapsedMs(autoregressiveStart)
-
-        val yTensor = decoderResult.get(0) as OnnxTensor
-        val yInfo = yTensor.info as TensorInfo
-        val yValues = LongArray(elementCount(yInfo.shape))
-        yTensor.longBuffer.get(yValues)
-        if (yValues.isNotEmpty()) yValues[yValues.lastIndex] = 0L
-        val requested = if (loopIndex == 0) yValues.size else loopIndex
-        val semanticCount = min(max(1, requested), yValues.size)
-        val semantic = yValues.copyOfRange(yValues.size - semanticCount, yValues.size)
-        val semanticTensor = OnnxTensor.createTensor(
-            env, java.nio.LongBuffer.wrap(semantic), longArrayOf(1, 1, semanticCount.toLong())
-        )
-        decoderResult.close()
-
-        val vocoderInputs = linkedMapOf<String, OnnxTensor>()
-        info.vocoderInputNames.forEach { name ->
-            vocoderInputs[name] = if (name == "pred_semantic") semanticTensor else tensor(name)
-        }
-        val vocoderStart = System.nanoTime()
-        val audioResult = vocoder!!.run(vocoderInputs)
-        val vocoderMs = elapsedMs(vocoderStart)
-        loadedInputs.values.forEach { it.close() }
-        semanticTensor.close()
-
-        val audioTensor = audioResult.get(0) as OnnxTensor
-        val audioInfo = audioTensor.info as TensorInfo
-        val audio = FloatArray(elementCount(audioInfo.shape))
-        audioTensor.floatBuffer.get(audio)
-        audioResult.close()
-
-        val total = encoderMs + firstMs + autoregressiveMs + vocoderMs
-        val seconds = audio.size.toDouble() / info.sampleRate
-        return BenchmarkResult(
-            case.title, case.text, lastModelLoadMs, fixtureLoadMs, encoderMs, firstMs,
-            autoregressiveMs, vocoderMs, total, iterations, seconds,
-            if (seconds > 0.0) total / (seconds * 1000.0) else Double.POSITIVE_INFINITY,
-            (Debug.getPss() / 1024L).toInt(), audio
-        )
     }
 
     fun play(audio: FloatArray, sampleRate: Int) {
@@ -189,10 +232,19 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
 
     private fun elementCount(shape: LongArray) = shape.fold(1L) { a, b -> a * b }.toInt()
     private fun elapsedMs(start: Long) = (System.nanoTime() - start) / 1_000_000L
+    private fun checkCancelled(shouldCancel: () -> Boolean) {
+        if (shouldCancel()) throw CancellationException("用户停止了测试")
+    }
+
+    fun unloadModels() {
+        encoder?.close(); firstDecoder?.close(); stageDecoder?.close(); vocoder?.close()
+        encoder = null; firstDecoder = null; stageDecoder = null; vocoder = null
+        currentConfig = null
+        lastModelLoadMs = 0L
+    }
 
     override fun close() {
         audioTrack?.release()
-        encoder?.close(); firstDecoder?.close(); stageDecoder?.close(); vocoder?.close()
-        encoder = null; firstDecoder = null; stageDecoder = null; vocoder = null
+        unloadModels()
     }
 }
