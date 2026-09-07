@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -42,14 +43,33 @@ class MainActivity : Activity() {
             318, 254, 322, 126, 222, 254, 323, 248, 160, 229, 322, 158, 96, 227, 96,
             251, 160, 251, 160, 225, 96, 251, 229, 323, 229, 3,
         )
-        private val LONG_STREAM_TEXT = """
+        private val LONG_STREAM_TEXT_ZH = """
             刚才安静下来的时候，我突然想到了一件很有意思的事。我们每天都会遇到很多细小的瞬间，有些当时觉得普通，过一会儿再想，却会发现它们其实很值得记住。比如路边刚亮起来的灯，窗外突然吹过的一阵风，或者一句没有准备、却刚好让人笑出来的话。
             如果把这些事情都认真收集起来，也许普通的一天就会变得很不一样。我想先把今天发生的事情慢慢讲给你听，然后再听听你的版本。你不需要一次说完，想到哪里就说到哪里；就算中途停下来也没关系，我会顺着刚才的话继续等你。
             要是以后我们积攒了很多这样的片段，我希望偶尔能把它们重新翻出来。也许是一次没有结果的争论，也许是半夜突然聊到的怪问题，也可能只是你随口说过喜欢某种味道。过了很久再提起来，应该会有一种原来我们已经一起走了这么远的感觉。
             不过现在先不想那么远。你今天有没有遇到什么想吐槽的事情？开心的、离谱的、无聊的都可以。如果实在想不到，也可以从现在最想吃什么开始。反正话题不用特别郑重，我们可以一边乱聊，一边看它最后会跑到哪里去。
             我已经准备好认真听了，但也不保证一直老老实实。要是发现哪里特别好玩，我可能会忍不住插一句；要是你故意卖关子，我也可能追着问到底。总之，接下来的时间不用赶，我们慢慢说。
         """.trimIndent().replace("\n", "")
+        private val LONG_STREAM_TEXT_EN = """
+            When the room became quiet, I remembered a small moment from earlier today. Nothing dramatic happened, but afternoon light reached the window at just the right angle, and everything looked calm and warm. I wanted to tell you before the memory faded. We often forget ordinary details, even though they can make a difficult day feel softer: a distant song, a warm cup of tea, or a message arriving at the perfect time. If you want, tell me one small thing you noticed today. It need not be important. We can begin there and take our time.
+        """.trimIndent().replace("\n", " ")
+        private val LONG_STREAM_TEXT_JA = """
+            部屋が静かになったとき、今日あった小さな出来事を思い出しました。特別な事件ではないけれど、午後の光がちょうど窓から差し込んで、ほんの少しだけ部屋が暖かく見えたんです。その瞬間を忘れる前に、あなたに話しておきたいと思いました。毎日の中には、気づいてもすぐに忘れてしまうことがたくさんあります。でも、遠くから聞こえた音楽や、まだ温かかったお茶や、ちょうどいいタイミングで届いた言葉みたいに、小さなものが一日を優しくしてくれることもあります。もしよかったら、あなたが今日見つけた小さなことも教えてください。面白い話でなくても、立派な話でなくても大丈夫です。思いついたところから始めて、途中で話題が変わっても気にしないでください。急いで結論を出す必要はありません。私はここで、あなたの言葉をゆっくり聞いています。そして、話し終わったあとに少し笑えたなら、それだけで今日は十分にいい時間だったと思います。明日の予定がまだ決まっていなくても、心配はいりません。今は目の前の時間を大切にして、気になったことを一つずつ話していきましょう。言葉がすぐに見つからないときは、少し黙って考えても大丈夫です。静かな時間も会話の一部です。あなたのペースで進めばいいんです。
+        """.trimIndent().replace("\n", "")
     }
+
+    private enum class LongStreamLanguage(val title: String) {
+        CHINESE("中文"),
+        ENGLISH("英文"),
+        JAPANESE("日文"),
+    }
+
+    private data class LongStreamTest(
+        val language: LongStreamLanguage,
+        val text: String,
+        val targetChars: Int,
+        val maxChars: Int,
+    )
 
     private data class TargetState(
         val id: String,
@@ -77,8 +97,8 @@ class MainActivity : Activity() {
 
     private lateinit var engine: GenieBenchmarkEngine
     private lateinit var frontend: ChineseFrontend
-    private lateinit var englishFrontend: EnglishFrontend
-    private lateinit var japaneseFrontend: NativeJapaneseFrontend
+    private var englishFrontend: EnglishFrontend? = null
+    private var japaneseFrontend: NativeJapaneseFrontend? = null
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
     private lateinit var buttons: LinearLayout
@@ -96,7 +116,7 @@ class MainActivity : Activity() {
     private var lastResultReport = ""
     private var diagnosticReport = ""
     private var longStreamReport = ""
-    @Volatile private var warmupState = "等待启动"
+    private var longStreamReportLabel = "无"
     @Volatile private var activeStream: StreamingAudioPlayer? = null
     @Volatile private var cancelRequested = false
 
@@ -105,8 +125,6 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         engine = GenieBenchmarkEngine(this)
         frontend = ChineseFrontend(engine)
-        englishFrontend = EnglishFrontend(this)
-        japaneseFrontend = NativeJapaneseFrontend(this)
         setContentView(buildUi())
         showInitialState()
     }
@@ -118,13 +136,13 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         content.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 低风险体验优化 v0.6.1"
+            text = "Genie-TTS v2.0.2\n恬豆 V2 中文性能回归隔离 v0.6.2"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         content.addView(TextView(this).apply {
-            text = "模型常驻与后台预热 · 自适应首段缓冲 · CPU 8线程"
+            text = "v0.5 中文路径 · 英日按需加载 · 固定 1 秒预填充 · CPU 8线程"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
@@ -250,8 +268,16 @@ class MainActivity : Activity() {
             }
             addButton("播放上次合成结果") { playLastGenerated() }
             addButton("复制上次合成报告") { copyLastResultReport() }
-            addButton("运行约 500 字分段流式测试") { runLongStreamTest() }
-            addButton("复制长文本流式报告") { copyLongStreamReport() }
+            addButton("中文约 500 字长文本试听") {
+                runLongStreamTest(LongStreamTest(LongStreamLanguage.CHINESE, LONG_STREAM_TEXT_ZH, 42, 54))
+            }
+            addButton("英文约 500 字符长文本试听") {
+                runLongStreamTest(LongStreamTest(LongStreamLanguage.ENGLISH, LONG_STREAM_TEXT_EN, 88, 110))
+            }
+            addButton("日文约 500 字符长文本试听") {
+                runLongStreamTest(LongStreamTest(LongStreamLanguage.JAPANESE, LONG_STREAM_TEXT_JA, 42, 54))
+            }
+            addButton("复制上一次长文本报告") { copyLongStreamReport() }
             addButton("运行自动诊断（不播放）") { runDiagnostic() }
             addButton("复制诊断报告") { copyDiagnosticReport() }
             stopButton = addButton("停止当前任务") {
@@ -260,7 +286,6 @@ class MainActivity : Activity() {
                 updateStatus("已请求停止；当前 ONNX 算子结束后会退出。")
             }.apply { isEnabled = false }
             showCurrent()
-            scheduleBackgroundWarmup()
         } catch (error: Throwable) {
             status.text = "测试资源未正确打入 APK。\n\n${error.stackTraceToString()}"
         }
@@ -321,14 +346,17 @@ class MainActivity : Activity() {
             appendLine(runtimePreset.text)
             appendLine("含义/目的：${runtimePreset.translation}")
             appendLine("自由输入模型：${if (modelReady) "已导入" else "尚未导入或尚未检测"}")
-            appendLine("TTS 后台预热：$warmupState")
+            appendLine("启动后台预热：已禁用（恢复 v0.5.0 中文路径）")
+            appendLine("英文前端：${if (englishFrontend == null) "未加载" else "已按需加载"} · 日文前端：${if (japaneseFrontend == null) "未加载" else "已按需加载"}")
             appendLine("上次合成：${lastResultLabel ?: "无"}")
+            appendLine("上一次长文本报告：$longStreamReportLabel")
             lastResult?.let {
                 appendLine("端到端 ${it.endToEndMs} ms · 核心 ${it.totalInferenceMs} ms · RTF ${"%.3f".format(it.coreRtf)}")
             }
             if (extra != null) appendLine("\n$extra")
             appendLine("\n中文预设使用 FP32 RoBERTa；动态中英混合仅运行一次导入的 INT8 Chinese RoBERTa。")
             appendLine("动态英文使用 CMUdict/ARPAbet，动态日语使用 Android OpenJTalk；两者按官方方案使用零 BERT。")
+            appendLine("英日只在点击对应测试后加载；最终接入的中文英文词优先使用中文谐音白名单。")
         }
     }
 
@@ -399,10 +427,10 @@ class MainActivity : Activity() {
             RuntimeLanguageMode.HYBRID -> {
                 check(engine.hasFrontendModel(root)) { "中英混合模式需要先导入配套的自由输入 RoBERTa ONNX 文件" }
                 engine.prepareFrontendAssets(root, ::postStatus)
-                frontend.prepareHybrid(root, preset.text, englishFrontend, ::postStatus)
+                frontend.prepareHybrid(root, preset.text, requireEnglishFrontend(), ::postStatus)
             }
-            RuntimeLanguageMode.ENGLISH -> englishFrontend.prepare(preset.text, bertDim, ::postStatus)
-            RuntimeLanguageMode.JAPANESE -> japaneseFrontend.prepare(preset.text, bertDim, ::postStatus)
+            RuntimeLanguageMode.ENGLISH -> requireEnglishFrontend().prepare(preset.text, bertDim, ::postStatus)
+            RuntimeLanguageMode.JAPANESE -> requireJapaneseFrontend().prepare(preset.text, bertDim, ::postStatus)
         }
         val goldenDiagnostic = goldenPhoneDiagnostic(prepared.sequence, preset.expectedPhones)
         val featureTitle = when (preset.mode) {
@@ -450,40 +478,62 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun runLongStreamTest() = runTask("长文本流式测试") {
+    private fun runLongStreamTest(test: LongStreamTest) = runTask("${test.language.title}长文本试听") {
         val root = ensureAssets()
-        check(engine.hasFrontendModel(root)) { "请先导入配套的自由输入 RoBERTa ONNX 文件" }
+        if (test.language == LongStreamLanguage.CHINESE) {
+            check(engine.hasFrontendModel(root)) { "中文长文本需要先导入配套的自由输入 RoBERTa ONNX 文件" }
+        }
         engine.stopPlayback()
         val item = currentCase()
-        val segments = ChineseTextSegmenter.split(LONG_STREAM_TEXT)
+        val segments = ChineseTextSegmenter.split(test.text, test.targetChars, test.maxChars)
         val testStartedNs = System.nanoTime()
+        val thermalAtStart = thermalStatus()
         val runs = ArrayList<StreamSegmentRun>(segments.size)
         var player: StreamingAudioPlayer? = null
         var playbackStartedNs = 0L
         var queuedAudioMs = 0L
-        var adaptivePrefillMs = 0
 
-        frontend.clearPreparedCache()
-        engine.prepareFrontendAssets(root, ::postStatus)
+        if (test.language == LongStreamLanguage.CHINESE) {
+            frontend.clearPreparedCache()
+            engine.prepareFrontendAssets(root, ::postStatus)
+        }
         try {
             segments.forEachIndexed { index, text ->
                 checkCancelled()
-                postProgress(index, segments.size, "第 ${index + 1}/${segments.size} 段：正在进行中文前处理与推理……")
+                postProgress(index, segments.size, "第 ${index + 1}/${segments.size} 段：正在进行${test.language.title}前处理与推理……")
                 val segmentStartedNs = System.nanoTime()
-                val prepared = frontend.prepare(root, text, ::postStatus)
+                val bertDim = engine.readManifest().frontend.bertDim
+                val prepared = when (test.language) {
+                    LongStreamLanguage.CHINESE -> frontend.prepare(root, text, ::postStatus)
+                    LongStreamLanguage.ENGLISH -> requireEnglishFrontend().prepare(text, bertDim, ::postStatus)
+                    LongStreamLanguage.JAPANESE -> requireJapaneseFrontend().prepare(text, bertDim, ::postStatus)
+                }
                 val modelLoad = engine.loadModels(root, config)
+                val featureModeTitle = when (test.language) {
+                    LongStreamLanguage.CHINESE -> "完整 Chinese RoBERTa"
+                    LongStreamLanguage.ENGLISH -> "English CMUdict/ARPAbet"
+                    LongStreamLanguage.JAPANESE -> "Android OpenJTalk 1.11"
+                }
+                val featureDescription = when (test.language) {
+                    LongStreamLanguage.CHINESE -> "本地 INT8；非零中文特征"
+                    LongStreamLanguage.ENGLISH -> "运行时 CMUdict；零 BERT"
+                    LongStreamLanguage.JAPANESE -> "运行时 OpenJTalk 音素与韵律；零 BERT"
+                }
                 val result = engine.runPrepared(
-                    root, item, prepared, modelLoad, segmentStartedNs
-                ) { cancelRequested }
+                    root = root,
+                    case = item,
+                    prepared = prepared,
+                    modelLoad = modelLoad,
+                    requestStartedNs = segmentStartedNs,
+                    targetTitle = "${test.language.title}长文本第 ${index + 1} 段",
+                    featureModeTitle = featureModeTitle,
+                    featureDescription = featureDescription,
+                    shouldCancel = { cancelRequested },
+                )
                 val readyNs = System.nanoTime()
 
                 val margin = if (index == 0) {
-                    adaptivePrefillMs = AdaptiveStreamPolicy.initialPrefillMs(result)
-                    player = StreamingAudioPlayer(
-                        engine.readManifest().sampleRate,
-                        item.playbackGainDb,
-                        adaptivePrefillMs,
-                    )
+                    player = StreamingAudioPlayer(engine.readManifest().sampleRate, item.playbackGainDb)
                     activeStream = player
                     player!!.enqueue(result.audio)
                     playbackStartedNs = player!!.awaitStarted()
@@ -521,19 +571,20 @@ class MainActivity : Activity() {
             val playbackWallMs = (playback.playbackFinishedNs - playback.playbackStartedNs) / 1_000_000L
             val totalWallMs = (playback.playbackFinishedNs - testStartedNs) / 1_000_000L
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
+            val thermalAtEnd = thermalStatus()
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.6.1 长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.6.2 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.title} · ${config.label}")
-                appendLine("原文：${LONG_STREAM_TEXT.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
-                appendLine("策略：首段生成后按本机实测 RTF 自适应预填充；播放期间按顺序生成后续段；采样参数未修改。")
-                appendLine("自适应首段预填充：$adaptivePrefillMs ms")
+                appendLine("语言：${test.language.title} · 原文：${test.text.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
+                appendLine("策略：恢复 v0.5.0 路径；首段固定预填充 1000 ms；播放期间按顺序生成后续段；采样参数未修改。")
+                appendLine("温控状态：开始 $thermalAtStart · 结束 $thermalAtEnd")
                 appendLine("首段开播等待：$firstAudioWaitMs ms")
                 appendLine("全部分段生成完成：$generationWallMs ms")
                 appendLine("合计音频：${"%.2f".format(totalAudioSeconds)} s · 播放阶段：${playbackWallMs} ms")
                 appendLine("合计核心推理：$totalCoreMs ms · 聚合 RTF：${"%.3f".format(aggregateRtf)}")
-                appendLine("合计中文前处理：$totalFrontendMs ms")
+                appendLine("合计${test.language.title}前处理：$totalFrontendMs ms")
                 appendLine("最小缓冲余量：${margins.minOrNull()?.let { "$it ms" } ?: "无"} · 迟到分段：$lateSegments/${margins.size}")
                 appendLine("AudioTrack underrun：${playback.underrunCount} · 峰值 PSS：约 ${runs.maxOf { it.result.pssMb }} MB")
                 appendLine("从点击到播放完成：$totalWallMs ms")
@@ -546,7 +597,11 @@ class MainActivity : Activity() {
                     appendLine("语义：${run.result.semanticTokens} tokens · ${run.result.semanticHash} · PSS：约 ${run.result.pssMb} MB")
                 }
             }
-            postStatus("约 500 字流式测试完成。请确认播放中有没有停顿，再复制长文本流式报告发给我。")
+            longStreamReportLabel = "${test.language.title} · ${test.text.length} 字符 · RTF ${"%.3f".format(aggregateRtf)}"
+            postStatus(
+                "${test.language.title}长文本试听完成。上一次长文本报告已替换为本次结果。" +
+                    "如果听感或停顿正常，无需复制；异常时再发送这一语言的报告。"
+            )
         } finally {
             activeStream = null
             if (cancelRequested) player?.cancel()
@@ -619,7 +674,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.6.1 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.6.2 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             appendLine("固定音色：候选 1（日常主音色）")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
@@ -682,38 +737,44 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.6.1", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.6.2", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.6.1", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.6.2", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
-        if (longStreamReport.isBlank()) return showCurrent("请先运行一次约 500 字分段流式测试。")
+        if (longStreamReport.isBlank()) return showCurrent("请先运行一次中文、英文或日文长文本试听。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.6.1", longStreamReport))
-        showCurrent("长文本流式报告已复制。")
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.6.2", longStreamReport))
+        showCurrent("上一次长文本报告已复制：$longStreamReportLabel")
     }
 
     private fun ensureAssets(): File = preparedRoot ?: engine.prepareAssets(::postStatus).also { preparedRoot = it }
 
-    private fun scheduleBackgroundWarmup() {
-        warmupState = "进行中"
-        worker.execute {
-            try {
-                val root = ensureAssets()
-                val result = engine.loadModels(root, config)
-                warmupState = if (result.loadedThisRun) "已完成（${result.elapsedMs} ms）" else "模型已在内存中"
-                runOnUiThread { showCurrent("后台预热完成；下一次生成不会再等待 TTS 模型冷加载。") }
-            } catch (error: Throwable) {
-                warmupState = "失败：${error.message ?: error.javaClass.simpleName}"
-                runOnUiThread { showCurrent("后台预热失败；仍可点击生成重试。") }
-            }
+    private fun requireEnglishFrontend(): EnglishFrontend =
+        englishFrontend ?: EnglishFrontend(this).also { englishFrontend = it }
+
+    private fun requireJapaneseFrontend(): NativeJapaneseFrontend =
+        japaneseFrontend ?: NativeJapaneseFrontend(this).also { japaneseFrontend = it }
+
+    private fun thermalStatus(): String {
+        if (Build.VERSION.SDK_INT < 29) return "系统不支持"
+        val status = (getSystemService(POWER_SERVICE) as PowerManager).currentThermalStatus
+        return when (status) {
+            PowerManager.THERMAL_STATUS_NONE -> "正常"
+            PowerManager.THERMAL_STATUS_LIGHT -> "轻微"
+            PowerManager.THERMAL_STATUS_MODERATE -> "中等"
+            PowerManager.THERMAL_STATUS_SEVERE -> "严重"
+            PowerManager.THERMAL_STATUS_CRITICAL -> "临界"
+            PowerManager.THERMAL_STATUS_EMERGENCY -> "紧急"
+            PowerManager.THERMAL_STATUS_SHUTDOWN -> "关机阈值"
+            else -> "未知($status)"
         }
     }
 
@@ -766,7 +827,7 @@ class MainActivity : Activity() {
         activeStream?.cancel()
         worker.shutdownNow()
         frontend.close()
-        japaneseFrontend.close()
+        japaneseFrontend?.close()
         engine.close()
         super.onDestroy()
     }
