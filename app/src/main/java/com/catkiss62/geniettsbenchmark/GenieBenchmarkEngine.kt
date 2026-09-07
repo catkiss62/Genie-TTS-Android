@@ -186,7 +186,8 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     ): BenchmarkResult = run(
         root, case, preset.title, preset.text, preset.text, 0L,
         "预计算 FP32 Chinese RoBERTa · ${preset.bertNonZero}/${preset.bertElements} 非零",
-        preset.tensors, null, modelLoad, requestStartedNs, shouldCancel
+        preset.tensors, null, modelLoad, requestStartedNs,
+        "完整 Chinese RoBERTa", "预设 FP32；非零中文特征", shouldCancel
     )
 
     fun runPrepared(
@@ -195,10 +196,14 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         prepared: PreparedText,
         modelLoad: ModelLoadInfo,
         requestStartedNs: Long,
+        targetTitle: String = "自由输入",
+        featureModeTitle: String = "完整 Chinese RoBERTa",
+        featureDescription: String = "本地 INT8；非零中文特征",
         shouldCancel: () -> Boolean = { false },
     ): BenchmarkResult = run(
-        root, case, "自由输入", prepared.text, prepared.normalizedText, prepared.frontendMs,
-        prepared.diagnostic, emptyList(), prepared, modelLoad, requestStartedNs, shouldCancel
+        root, case, targetTitle, prepared.text, prepared.normalizedText, prepared.frontendMs,
+        prepared.diagnostic, emptyList(), prepared, modelLoad, requestStartedNs,
+        featureModeTitle, featureDescription, shouldCancel
     )
 
     private fun run(
@@ -213,6 +218,8 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         prepared: PreparedText?,
         modelLoad: ModelLoadInfo,
         requestStartedNs: Long,
+        featureModeTitle: String,
+        featureDescription: String,
         shouldCancel: () -> Boolean,
     ): BenchmarkResult {
         val info = readManifest()
@@ -320,7 +327,7 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
             val rms = sqrt(audio.sumOf { value -> value.toDouble() * value.toDouble() } / audio.size)
             val clippedPercent = audio.count { abs(it) >= 0.999f }.toDouble() * 100.0 / audio.size
             return BenchmarkResult(
-                config, "完整 Chinese RoBERTa", "预设 FP32 / 自由输入 INT8；均为非零中文特征",
+                config, featureModeTitle, featureDescription,
                 case.title, targetTitle, targetText, normalizedText, frontendMs, frontendDiagnostic,
                 modelLoad.loadedThisRun, modelLoad.elapsedMs, fixtureLoadMs, encoderMs, firstMs,
                 autoregressiveMs, vocoderMs, total, iterations, seconds,

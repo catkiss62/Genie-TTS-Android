@@ -40,9 +40,7 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
         val started = System.nanoTime()
         val info = engine.readManifest().frontend
         ensureDictionaries(root, info, progress)
-        require(!containsJapaneseKana(text)) {
-            "当前未加入日语 G2P；请把日语改成中文读音后再生成"
-        }
+        val ignoredKana = text.count(::isJapaneseKana)
         val latin = expandLatin(text)
         val normalized = normalize(latin.text)
         require(normalized.length <= 81) {
@@ -88,6 +86,7 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
                 append("词组命中${phoneResult.phraseHits}次")
                 if (latin.spelledLetters > 0) append(" · 英文字母逐读${latin.spelledLetters}个")
                 if (latin.tokenHits > 0) append(" · token→拖肯 ${latin.tokenHits}次")
+                if (ignoredKana > 0) append(" · 已忽略日语假名${ignoredKana}个")
             },
         )
         synchronized(cache) { cache[text] = prepared }
@@ -216,9 +215,8 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
         return LatinExpansion(output.toString(), spelledLetters, tokenHits)
     }
 
-    private fun containsJapaneseKana(text: String): Boolean = text.any { char ->
+    private fun isJapaneseKana(char: Char): Boolean =
         char in '\u3040'..'\u30ff' || char in '\u31f0'..'\u31ff' || char in '\uff66'..'\uff9d'
-    }
 
     private fun normalize(text: String): String {
         val digits = mapOf('0' to '零', '1' to '一', '2' to '二', '3' to '三', '4' to '四',

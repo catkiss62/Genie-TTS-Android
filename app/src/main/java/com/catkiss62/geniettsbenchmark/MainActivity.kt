@@ -30,6 +30,18 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_ROBERTA_MODEL = 3303
         private const val ENGLISH_TEST_TEXT = "请依次读出 API、GPT 和 token，每一个字母都不能跳过。"
+        private const val NATIVE_ENGLISH_TEXT = "DeepSeek uses a token. I am happy to hear your voice."
+        private const val NATIVE_JAPANESE_TEXT = "こんにちは。今日は一緒に、ゆっくりお話ししましょう。"
+        private val NATIVE_ENGLISH_PHONES = longArrayOf(
+            3, 26, 58, 73, 75, 58, 61, 92, 88, 93, 12, 93, 12, 80, 68, 61, 12, 64, 3,
+            22, 10, 63, 51, 10, 73, 57, 80, 88, 51, 58, 74, 92, 16, 74, 90, 71, 75, 3,
+        )
+        private val NATIVE_JAPANESE_PHONES = longArrayOf(
+            3, 222, 229, 322, 64, 227, 160, 125, 160, 316, 96, 3,
+            223, 229, 323, 229, 316, 96, 160, 322, 126, 251, 229, 227, 160, 1,
+            318, 254, 322, 126, 222, 254, 323, 248, 160, 229, 322, 158, 96, 227, 96,
+            251, 160, 251, 160, 225, 96, 251, 229, 323, 229, 3,
+        )
         private val LONG_STREAM_TEXT = """
             刚才安静下来的时候，我突然想到了一件很有意思的事。我们每天都会遇到很多细小的瞬间，有些当时觉得普通，过一会儿再想，却会发现它们其实很值得记住。比如路边刚亮起来的灯，窗外突然吹过的一阵风，或者一句没有准备、却刚好让人笑出来的话。
             如果把这些事情都认真收集起来，也许普通的一天就会变得很不一样。我想先把今天发生的事情慢慢讲给你听，然后再听听你的版本。你不需要一次说完，想到哪里就说到哪里；就算中途停下来也没关系，我会顺着刚才的话继续等你。
@@ -45,6 +57,14 @@ class MainActivity : Activity() {
         val text: String,
         val preset: TextPreset? = null,
         val prepared: PreparedText? = null,
+    )
+
+    private data class FixedLanguageTest(
+        val id: String,
+        val title: String,
+        val text: String,
+        val featureTitle: String,
+        val phones: LongArray,
     )
 
     private data class StreamSegmentRun(
@@ -69,6 +89,7 @@ class MainActivity : Activity() {
     private var selectedPreset: TextPreset? = null
     private var lastResult: BenchmarkResult? = null
     private var lastResultLabel: String? = null
+    private var lastResultReport = ""
     private var diagnosticReport = ""
     private var longStreamReport = ""
     @Volatile private var activeStream: StreamingAudioPlayer? = null
@@ -90,13 +111,13 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         root.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 中英混合测试 v0.4.1"
+            text = "Genie-TTS v2.0.2\n恬豆 V2 三语能力测试 v0.5.0"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "完整 RoBERTa · 英文字母逐读 · token→拖肯 · 约 500 字分段流式"
+            text = "中文完整 RoBERTa · English ARPAbet · Japanese OpenJTalk · CPU 8线程"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
@@ -171,7 +192,24 @@ class MainActivity : Activity() {
             })
             addButton("导入自由输入 RoBERTa 模型") { chooseFrontendModel() }
             addButton("重新生成并播放") { runCurrent() }
+            addButton("生成并播放英语测试") {
+                runLanguageTest(
+                    FixedLanguageTest(
+                        "native_english", "英语固定测试", NATIVE_ENGLISH_TEXT,
+                        "English ARPAbet", NATIVE_ENGLISH_PHONES,
+                    )
+                )
+            }
+            addButton("生成并播放日语测试") {
+                runLanguageTest(
+                    FixedLanguageTest(
+                        "native_japanese", "日语固定测试", NATIVE_JAPANESE_TEXT,
+                        "Japanese OpenJTalk", NATIVE_JAPANESE_PHONES,
+                    )
+                )
+            }
             addButton("播放上次合成结果") { playLastGenerated() }
+            addButton("复制上次合成报告") { copyLastResultReport() }
             addButton("运行约 500 字分段流式测试") { runLongStreamTest() }
             addButton("复制长文本流式报告") { copyLongStreamReport() }
             addButton("运行自动诊断（不播放）") { runDiagnostic() }
@@ -241,7 +279,8 @@ class MainActivity : Activity() {
                 appendLine("端到端 ${it.endToEndMs} ms · 核心 ${it.totalInferenceMs} ms · RTF ${"%.3f".format(it.coreRtf)}")
             }
             if (extra != null) appendLine("\n$extra")
-            appendLine("\n预设使用 FP32 RoBERTa；自由输入和长文本使用导入的 INT8 RoBERTa。")
+            appendLine("\n中文预设使用 FP32 RoBERTa；自由输入和长文本使用导入的 INT8 RoBERTa。")
+            appendLine("英日固定测试使用 Genie 官方音素体系与零 BERT，用来验证模型本身的三语能力。")
         }
     }
 
@@ -258,8 +297,47 @@ class MainActivity : Activity() {
         val result = generate(item, target, requestStartedNs = started)
         lastResult = result
         lastResultLabel = "${item.title} · ${target.title}"
+        lastResultReport = result.report(deviceLine())
         engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
         runOnUiThread { showCurrent("已重新推理并开始播放。") }
+    }
+
+    private fun runLanguageTest(test: FixedLanguageTest) = runTask(test.title) {
+        val started = System.nanoTime()
+        val root = ensureAssets()
+        val item = currentCase()
+        postStatus("${item.title} · ${test.title}：正在使用官方音素生成……")
+        val bertDim = engine.readManifest().frontend.bertDim
+        val prepared = PreparedText(
+            text = test.text,
+            normalizedText = test.text,
+            sequence = test.phones,
+            bert = FloatArray(test.phones.size * bertDim),
+            bertDim = bertDim,
+            frontendMs = 0L,
+            diagnostic = "官方固定音素 · ${test.phones.size}音素 · BERT 全零",
+        )
+        val modelLoad = engine.loadModels(root, config)
+        val result = engine.runPrepared(
+            root = root,
+            case = item,
+            prepared = prepared,
+            modelLoad = modelLoad,
+            requestStartedNs = started,
+            targetTitle = test.title,
+            featureModeTitle = test.featureTitle,
+            featureDescription = "Genie 官方原生音素 · 零 BERT",
+            shouldCancel = { cancelRequested },
+        )
+        lastResult = result
+        lastResultLabel = "${item.title} · ${test.title}"
+        lastResultReport = result.report(deviceLine())
+        engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
+        postStatus(
+            lastResultReport +
+                "\n请重点判断：是否像目标语言、音色是否仍像恬豆、发音和停顿是否自然。\n" +
+                "已开始播放；可点击“复制上次合成报告”发给我。"
+        )
     }
 
     private fun runLongStreamTest() = runTask("长文本流式测试") {
@@ -329,7 +407,7 @@ class MainActivity : Activity() {
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.4.1 长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.5.0 长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.title} · ${config.label}")
                 appendLine("原文：${LONG_STREAM_TEXT.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
@@ -424,7 +502,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.4.1 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.5.0 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             appendLine("固定音色：候选 1（日常主音色）")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
@@ -487,14 +565,21 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.4.1", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.5.0", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
+    }
+
+    private fun copyLastResultReport() {
+        if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.5.0", lastResultReport))
+        showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次约 500 字分段流式测试。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.4.1", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.5.0", longStreamReport))
         showCurrent("长文本流式报告已复制。")
     }
 

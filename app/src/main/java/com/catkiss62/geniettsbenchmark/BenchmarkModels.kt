@@ -160,16 +160,16 @@ data class BenchmarkResult(
     val playbackGainDb: Double, val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android 中英混合测试 v0.4.1")
+        appendLine("Genie-TTS Android 三语能力测试 v0.5.0")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
-        appendLine("中文特征：$featureModeTitle")
+        appendLine("语言前端：$featureModeTitle")
         appendLine("特征说明：$featureDescription")
         appendLine("测试：$caseTitle")
         appendLine("台词类型：$targetTitle")
         appendLine("文本：$text")
         if (normalizedText != text) appendLine("规范化文本：$normalizedText")
-        appendLine("中文前处理：${frontendMs} ms · $frontendDiagnostic")
+        appendLine("文本前处理：${frontendMs} ms · $frontendDiagnostic")
         if (modelLoadedThisRun) {
             appendLine("本轮模型状态：冷加载 ${modelLoadMs} ms（不计入核心推理）")
         } else {
