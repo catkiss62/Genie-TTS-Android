@@ -136,19 +136,19 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         content.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 中文性能回归隔离 v0.6.2"
+            text = "Genie-TTS v2.0.2\n恬豆 V2 Android 接入收口 v0.6.3"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         content.addView(TextView(this).apply {
-            text = "v0.5 中文路径 · 英日按需加载 · 固定 1 秒预填充 · CPU 8线程"
+            text = "四种移植音色 + 一种测试备选 · 三语隔离 · CPU 8线程"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
         })
         content.addView(TextView(this).apply {
-            text = "选择候选音色"
+            text = "选择测试音色（正式移植仅前四项）"
             textSize = 13f
             setTextColor(Color.DKGRAY)
         })
@@ -215,7 +215,7 @@ class MainActivity : Activity() {
             val manifest = engine.readManifest()
             selectedPreset = manifest.presets.first()
             selector.adapter = ArrayAdapter(
-                this, android.R.layout.simple_spinner_dropdown_item, manifest.cases.map { it.title }
+                this, android.R.layout.simple_spinner_dropdown_item, manifest.cases.map { it.displayTitle }
             )
             selector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = showCurrent()
@@ -337,7 +337,12 @@ class MainActivity : Activity() {
         status.text = buildString {
             val runtimePreset = selectedRuntimePreset()
             appendLine(deviceLine())
-            appendLine("当前候选：${item.title}")
+            val voiceProfile = VoiceProfileCatalog.resolve(item.id)
+            appendLine("当前音色：${item.displayTitle}")
+            voiceProfile?.let {
+                appendLine("稳定键：${it.key} · ${if (it.includeInCompanion) "列入正式移植" else "仅保留在测试项目"}")
+                appendLine("建议用途：${it.intendedUse}")
+            }
             appendLine("参考台词：${item.referenceText}")
             if (item.playbackGainDb != 0.0) appendLine("播放响度校准：${"%+.1f".format(item.playbackGainDb)} dB")
             appendLine("当前台词：${selectedTextTitle()}")
@@ -372,7 +377,7 @@ class MainActivity : Activity() {
         val item = currentCase()
         val result = generate(item, target, requestStartedNs = started)
         lastResult = result
-        lastResultLabel = "${item.title} · ${target.title}"
+        lastResultLabel = "${item.displayTitle} · ${target.title}"
         lastResultReport = result.report(deviceLine())
         engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
         runOnUiThread { showCurrent("已重新推理并开始播放。") }
@@ -382,7 +387,7 @@ class MainActivity : Activity() {
         val started = System.nanoTime()
         val root = ensureAssets()
         val item = currentCase()
-        postStatus("${item.title} · ${test.title}：正在使用官方音素生成……")
+        postStatus("${item.displayTitle} · ${test.title}：正在使用官方音素生成……")
         val bertDim = engine.readManifest().frontend.bertDim
         val prepared = PreparedText(
             text = test.text,
@@ -406,7 +411,7 @@ class MainActivity : Activity() {
             shouldCancel = { cancelRequested },
         )
         lastResult = result
-        lastResultLabel = "${item.title} · ${test.title}"
+        lastResultLabel = "${item.displayTitle} · ${test.title}"
         lastResultReport = result.report(deviceLine())
         engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
         postStatus(
@@ -422,7 +427,7 @@ class MainActivity : Activity() {
         val item = currentCase()
         val preset = selectedRuntimePreset()
         val bertDim = engine.readManifest().frontend.bertDim
-        postStatus("${item.title} · ${preset.displayLabel}：正在运行手机端语言前端……")
+        postStatus("${item.displayTitle} · ${preset.displayLabel}：正在运行手机端语言前端……")
         val prepared = when (preset.mode) {
             RuntimeLanguageMode.HYBRID -> {
                 check(engine.hasFrontendModel(root)) { "中英混合模式需要先导入配套的自由输入 RoBERTa ONNX 文件" }
@@ -457,7 +462,7 @@ class MainActivity : Activity() {
             shouldCancel = { cancelRequested },
         )
         lastResult = result
-        lastResultLabel = "${item.title} · ${preset.displayLabel}"
+        lastResultLabel = "${item.displayTitle} · ${preset.displayLabel}"
         lastResultReport = buildString {
             append(result.report(deviceLine()))
             appendLine("含义/测试目的：${preset.translation}")
@@ -574,9 +579,9 @@ class MainActivity : Activity() {
             val thermalAtEnd = thermalStatus()
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.6.2 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.6.3 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
-                appendLine("音色：${item.title} · ${config.label}")
+                appendLine("音色：${item.displayTitle} · ${config.label}")
                 appendLine("语言：${test.language.title} · 原文：${test.text.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
                 appendLine("策略：恢复 v0.5.0 路径；首段固定预填充 1000 ms；播放期间按顺序生成后续段；采样参数未修改。")
                 appendLine("温控状态：开始 $thermalAtStart · 结束 $thermalAtEnd")
@@ -674,9 +679,9 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.6.2 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.6.3 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
-            appendLine("固定音色：候选 1（日常主音色）")
+            appendLine("固定音色：日常认真（主音色）")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
             if (!canRunDynamic) appendLine("自由输入：未导入 RoBERTa，因此本次跳过。")
             results.forEach { (label, result) ->
@@ -699,7 +704,7 @@ class MainActivity : Activity() {
         requestStartedNs: Long,
     ): BenchmarkResult {
         val root = ensureAssets()
-        postStatus("${item.title} · ${target.title}：正在生成……")
+        postStatus("${item.displayTitle} · ${target.title}：正在生成……")
         val modelLoad = engine.loadModels(root, config)
         return when {
             target.preset != null -> engine.runPreset(
@@ -737,21 +742,21 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.6.2", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.6.3", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.6.2", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.6.3", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次中文、英文或日文长文本试听。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.6.2", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.6.3", longStreamReport))
         showCurrent("上一次长文本报告已复制：$longStreamReportLabel")
     }
 

@@ -328,7 +328,7 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
             val clippedPercent = audio.count { abs(it) >= 0.999f }.toDouble() * 100.0 / audio.size
             return BenchmarkResult(
                 config, featureModeTitle, featureDescription,
-                case.title, targetTitle, targetText, normalizedText, frontendMs, frontendDiagnostic,
+                case.displayTitle, targetTitle, targetText, normalizedText, frontendMs, frontendDiagnostic,
                 modelLoad.loadedThisRun, modelLoad.elapsedMs, fixtureLoadMs, encoderMs, firstMs,
                 autoregressiveMs, vocoderMs, total, iterations, seconds,
                 if (seconds > 0.0) total / (seconds * 1000.0) else Double.POSITIVE_INFINITY,

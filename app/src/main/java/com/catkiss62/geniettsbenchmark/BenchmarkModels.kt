@@ -51,7 +51,10 @@ data class BenchmarkCase(
     val referenceAudio: String? = null,
     val playbackGainDb: Double = 0.0,
     val featureTensors: Map<String, List<TensorSpec>> = emptyMap(),
-)
+) {
+    val displayTitle: String
+        get() = VoiceProfileCatalog.displayName(id, title)
+}
 
 enum class BackendMode(val displayName: String) {
     CPU("CPU"),
@@ -160,7 +163,7 @@ data class BenchmarkResult(
     val playbackGainDb: Double, val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android 中文性能回归隔离测试 v0.6.2")
+        appendLine("Genie-TTS Android 接入收口测试 v0.6.3")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
         appendLine("语言前端：$featureModeTitle")
