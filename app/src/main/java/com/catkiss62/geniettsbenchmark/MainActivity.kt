@@ -86,6 +86,7 @@ class MainActivity : Activity() {
     private lateinit var runtimePresetSelector: Spinner
     private lateinit var freeInput: EditText
     private lateinit var stopButton: Button
+    private lateinit var pageScroll: ScrollView
     private val worker = Executors.newSingleThreadExecutor()
     private val config = EngineConfig(BackendMode.CPU, 8)
     private var preparedRoot: File? = null
@@ -95,6 +96,7 @@ class MainActivity : Activity() {
     private var lastResultReport = ""
     private var diagnosticReport = ""
     private var longStreamReport = ""
+    @Volatile private var warmupState = "等待启动"
     @Volatile private var activeStream: StreamingAudioPlayer? = null
     @Volatile private var cancelRequested = false
 
@@ -110,44 +112,44 @@ class MainActivity : Activity() {
     }
 
     private fun buildUi(): View {
-        val root = LinearLayout(this).apply {
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(16), dp(16), dp(16))
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
-        root.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 动态三语前端测试 v0.6.0"
+        content.addView(TextView(this).apply {
+            text = "Genie-TTS v2.0.2\n恬豆 V2 低风险体验优化 v0.6.1"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
-        root.addView(TextView(this).apply {
-            text = "中英混合单次 RoBERTa · CMUdict · Android OpenJTalk · CPU 8线程"
+        content.addView(TextView(this).apply {
+            text = "模型常驻与后台预热 · 自适应首段缓冲 · CPU 8线程"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
         })
-        root.addView(TextView(this).apply {
+        content.addView(TextView(this).apply {
             text = "选择候选音色"
             textSize = 13f
             setTextColor(Color.DKGRAY)
         })
         selector = Spinner(this)
-        root.addView(selector, LinearLayout.LayoutParams(-1, dp(48)))
-        root.addView(TextView(this).apply {
+        content.addView(selector, LinearLayout.LayoutParams(-1, dp(48)))
+        content.addView(TextView(this).apply {
             text = "动态三语前端预设"
             textSize = 13f
             setTextColor(Color.DKGRAY)
         })
         runtimePresetSelector = Spinner(this)
-        root.addView(runtimePresetSelector, LinearLayout.LayoutParams(-1, dp(48)))
-        root.addView(TextView(this).apply {
+        content.addView(runtimePresetSelector, LinearLayout.LayoutParams(-1, dp(48)))
+        content.addView(TextView(this).apply {
             text = "中文基准与诊断"
             textSize = 13f
             setTextColor(Color.DKGRAY)
         })
         buttons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(buttons)
+        content.addView(buttons)
         freeInput = EditText(this).apply {
             hint = "自由输入中文或英文字母（转写后最多 80 字）"
             setText("你好呀，今天想聊点什么？")
@@ -163,15 +165,31 @@ class MainActivity : Activity() {
             visibility = View.GONE
             isIndeterminate = true
         }
-        root.addView(progress, LinearLayout.LayoutParams(-1, dp(8)))
+        content.addView(progress, LinearLayout.LayoutParams(-1, dp(8)))
         status = TextView(this).apply {
             textSize = 13f
             setTextColor(Color.rgb(35, 29, 48))
             setTextIsSelectable(true)
             setPadding(0, dp(10), 0, dp(20))
         }
-        root.addView(ScrollView(this).apply { addView(status) }, LinearLayout.LayoutParams(-1, 0, 1f))
-        return root
+        content.addView(status, LinearLayout.LayoutParams(-1, -2))
+        pageScroll = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+            isVerticalScrollBarEnabled = true
+            setBackgroundColor(Color.rgb(247, 243, 255))
+            setOnApplyWindowInsetsListener { view, insets ->
+                view.setPadding(
+                    0,
+                    insets.systemWindowInsetTop,
+                    0,
+                    insets.systemWindowInsetBottom,
+                )
+                insets
+            }
+            addView(content, android.view.ViewGroup.LayoutParams(-1, -2))
+        }
+        return pageScroll
     }
 
     private fun showInitialState() {
@@ -242,6 +260,7 @@ class MainActivity : Activity() {
                 updateStatus("已请求停止；当前 ONNX 算子结束后会退出。")
             }.apply { isEnabled = false }
             showCurrent()
+            scheduleBackgroundWarmup()
         } catch (error: Throwable) {
             status.text = "测试资源未正确打入 APK。\n\n${error.stackTraceToString()}"
         }
@@ -302,6 +321,7 @@ class MainActivity : Activity() {
             appendLine(runtimePreset.text)
             appendLine("含义/目的：${runtimePreset.translation}")
             appendLine("自由输入模型：${if (modelReady) "已导入" else "尚未导入或尚未检测"}")
+            appendLine("TTS 后台预热：$warmupState")
             appendLine("上次合成：${lastResultLabel ?: "无"}")
             lastResult?.let {
                 appendLine("端到端 ${it.endToEndMs} ms · 核心 ${it.totalInferenceMs} ms · RTF ${"%.3f".format(it.coreRtf)}")
@@ -441,6 +461,7 @@ class MainActivity : Activity() {
         var player: StreamingAudioPlayer? = null
         var playbackStartedNs = 0L
         var queuedAudioMs = 0L
+        var adaptivePrefillMs = 0
 
         frontend.clearPreparedCache()
         engine.prepareFrontendAssets(root, ::postStatus)
@@ -457,7 +478,12 @@ class MainActivity : Activity() {
                 val readyNs = System.nanoTime()
 
                 val margin = if (index == 0) {
-                    player = StreamingAudioPlayer(engine.readManifest().sampleRate, item.playbackGainDb)
+                    adaptivePrefillMs = AdaptiveStreamPolicy.initialPrefillMs(result)
+                    player = StreamingAudioPlayer(
+                        engine.readManifest().sampleRate,
+                        item.playbackGainDb,
+                        adaptivePrefillMs,
+                    )
                     activeStream = player
                     player!!.enqueue(result.audio)
                     playbackStartedNs = player!!.awaitStarted()
@@ -497,11 +523,12 @@ class MainActivity : Activity() {
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.6.0 长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.6.1 长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.title} · ${config.label}")
                 appendLine("原文：${LONG_STREAM_TEXT.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
-                appendLine("策略：首段生成后立即播放；播放期间按顺序生成后续段；采样参数未修改。")
+                appendLine("策略：首段生成后按本机实测 RTF 自适应预填充；播放期间按顺序生成后续段；采样参数未修改。")
+                appendLine("自适应首段预填充：$adaptivePrefillMs ms")
                 appendLine("首段开播等待：$firstAudioWaitMs ms")
                 appendLine("全部分段生成完成：$generationWallMs ms")
                 appendLine("合计音频：${"%.2f".format(totalAudioSeconds)} s · 播放阶段：${playbackWallMs} ms")
@@ -592,7 +619,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.6.0 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.6.1 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             appendLine("固定音色：候选 1（日常主音色）")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
@@ -655,25 +682,40 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.6.0", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.6.1", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.6.0", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.6.1", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次约 500 字分段流式测试。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.6.0", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.6.1", longStreamReport))
         showCurrent("长文本流式报告已复制。")
     }
 
     private fun ensureAssets(): File = preparedRoot ?: engine.prepareAssets(::postStatus).also { preparedRoot = it }
+
+    private fun scheduleBackgroundWarmup() {
+        warmupState = "进行中"
+        worker.execute {
+            try {
+                val root = ensureAssets()
+                val result = engine.loadModels(root, config)
+                warmupState = if (result.loadedThisRun) "已完成（${result.elapsedMs} ms）" else "模型已在内存中"
+                runOnUiThread { showCurrent("后台预热完成；下一次生成不会再等待 TTS 模型冷加载。") }
+            } catch (error: Throwable) {
+                warmupState = "失败：${error.message ?: error.javaClass.simpleName}"
+                runOnUiThread { showCurrent("后台预热失败；仍可点击生成重试。") }
+            }
+        }
+    }
 
     private fun runTask(name: String, task: () -> Unit) {
         cancelRequested = false

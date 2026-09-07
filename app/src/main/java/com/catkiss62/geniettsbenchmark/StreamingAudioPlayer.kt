@@ -16,15 +16,17 @@ data class StreamPlaybackSummary(
     val playbackFinishedNs: Long,
     val framesWritten: Long,
     val underrunCount: Int,
+    val initialPrefillMs: Int,
 )
 
 /**
- * A single-producer PCM stream. The first generated segment pre-fills one second of audio
- * before playback starts; later segments can be generated while AudioTrack drains the queue.
+ * A single-producer PCM stream. The first generated segment pre-fills an adaptive amount of
+ * audio before playback starts; later segments are generated while AudioTrack drains the queue.
  */
 class StreamingAudioPlayer(
     private val sampleRate: Int,
     private val gainDb: Double,
+    private val initialPrefillMs: Int = 1_000,
 ) : AutoCloseable {
     private sealed interface Command {
         data class Audio(val samples: FloatArray) : Command
@@ -86,7 +88,8 @@ class StreamingAudioPlayer(
             val minBufferBytes = AudioTrack.getMinBufferSize(
                 sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(sampleRate / 5 * 2)
-            val bufferBytes = max(minBufferBytes, sampleRate * 2 * 2)
+            val bufferSeconds = max(2.0, initialPrefillMs / 1_000.0 + 0.5)
+            val bufferBytes = max(minBufferBytes, (sampleRate * 2 * bufferSeconds).toInt())
             localTrack = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -118,11 +121,12 @@ class StreamingAudioPlayer(
                         val pcm = toPcm(command.samples)
                         var offset = 0
                         if (firstAudio) {
-                            val prefillSamples = min(pcm.size, sampleRate)
+                            val prefillSamples = min(pcm.size, sampleRate * initialPrefillMs / 1_000)
                             offset += writeFully(localTrack, pcm, 0, prefillSamples)
                             localTrack.play()
                             playbackStartedNs = System.nanoTime()
-                            summary = StreamPlaybackSummary(playbackStartedNs, 0L, 0L, 0)
+                            val actualPrefillMs = prefillSamples * 1_000 / sampleRate
+                            summary = StreamPlaybackSummary(playbackStartedNs, 0L, 0L, 0, actualPrefillMs)
                             started.countDown()
                             firstAudio = false
                         }
@@ -141,7 +145,8 @@ class StreamingAudioPlayer(
             }
             val finishedNs = System.nanoTime()
             val underruns = if (android.os.Build.VERSION.SDK_INT >= 24) localTrack.underrunCount else -1
-            summary = StreamPlaybackSummary(playbackStartedNs, finishedNs, framesWritten, underruns)
+            val actualPrefillMs = summary?.initialPrefillMs ?: 0
+            summary = StreamPlaybackSummary(playbackStartedNs, finishedNs, framesWritten, underruns, actualPrefillMs)
             runCatching { localTrack.stop() }
         } catch (error: Throwable) {
             failure = error
@@ -176,6 +181,17 @@ class StreamingAudioPlayer(
 
     private fun playbackHeadFrames(target: AudioTrack): Long =
         target.playbackHeadPosition.toLong() and 0xffff_ffffL
+}
+
+object AdaptiveStreamPolicy {
+    /**
+     * Convert the first segment's measured generation debt into a small AudioTrack prefill.
+     * This changes only when playback begins; it never changes text, model inputs or audio.
+     */
+    fun initialPrefillMs(first: BenchmarkResult): Int {
+        val generationDebtMs = ((first.coreRtf - 1.0).coerceAtLeast(0.0) * first.audioSeconds * 1_000.0)
+        return (750.0 + generationDebtMs).toInt().coerceIn(750, 2_500)
+    }
 }
 
 object ChineseTextSegmenter {
