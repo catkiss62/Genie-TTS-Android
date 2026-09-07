@@ -29,6 +29,7 @@ import java.util.concurrent.Executors
 class MainActivity : Activity() {
     companion object {
         private const val REQUEST_ROBERTA_MODEL = 3303
+        private const val ENGLISH_TEST_TEXT = "请依次读出 API、GPT 和 token，每一个字母都不能跳过。"
         private val LONG_STREAM_TEXT = """
             刚才安静下来的时候，我突然想到了一件很有意思的事。我们每天都会遇到很多细小的瞬间，有些当时觉得普通，过一会儿再想，却会发现它们其实很值得记住。比如路边刚亮起来的灯，窗外突然吹过的一阵风，或者一句没有准备、却刚好让人笑出来的话。
             如果把这些事情都认真收集起来，也许普通的一天就会变得很不一样。我想先把今天发生的事情慢慢讲给你听，然后再听听你的版本。你不需要一次说完，想到哪里就说到哪里；就算中途停下来也没关系，我会顺着刚才的话继续等你。
@@ -89,13 +90,13 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         root.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 长文本流式测试 v0.4.0"
+            text = "Genie-TTS v2.0.2\n恬豆 V2 中英混合测试 v0.4.1"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "完整 RoBERTa · 5 个入选音色 · CPU 8 线程 · 约 500 字分段流式"
+            text = "完整 RoBERTa · 英文字母逐读 · token→拖肯 · 约 500 字分段流式"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
@@ -115,7 +116,7 @@ class MainActivity : Activity() {
         buttons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(buttons)
         freeInput = EditText(this).apply {
-            hint = "自由输入中文台词（最多 80 字）"
+            hint = "自由输入中文或英文字母（转写后最多 80 字）"
             setText("你好呀，今天想聊点什么？")
             minLines = 2
             maxLines = 4
@@ -157,6 +158,12 @@ class MainActivity : Activity() {
                 freeInput.isEnabled = true
                 freeInput.requestFocus()
                 showCurrent("已切换到自由输入。")
+            }
+            addButton("填入英文逐字母测试") {
+                selectedPreset = null
+                freeInput.isEnabled = true
+                freeInput.setText(ENGLISH_TEST_TEXT)
+                showCurrent("已填入英文测试；点击“重新生成并播放”即可验证。")
             }
             buttons.addView(freeInput, LinearLayout.LayoutParams(-1, -2).apply {
                 topMargin = dp(4)
@@ -322,7 +329,7 @@ class MainActivity : Activity() {
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.4.0 长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.4.1 长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.title} · ${config.label}")
                 appendLine("原文：${LONG_STREAM_TEXT.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
@@ -417,7 +424,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.4.0 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.4.1 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             appendLine("固定音色：候选 1（日常主音色）")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
@@ -480,14 +487,14 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.4.0", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.4.1", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次约 500 字分段流式测试。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.4.0", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.4.1", longStreamReport))
         showCurrent("长文本流式报告已复制。")
     }
 
