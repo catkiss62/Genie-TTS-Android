@@ -1,6 +1,6 @@
 package com.catkiss62.geniettsbenchmark
 
-import android.media.AudioAttributes
+import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioTrack
 import java.util.concurrent.CountDownLatch
@@ -23,9 +23,11 @@ data class StreamPlaybackSummary(
  * generated segment pre-fills one second before playback starts, then later segments are queued.
  */
 class StreamingAudioPlayer(
+    context: Context,
     private val sampleRate: Int,
     private val gainDb: Double,
 ) : AutoCloseable {
+    private val appContext = context.applicationContext
     private sealed interface Command {
         data class Audio(val samples: FloatArray) : Command
         data object Finish : Command
@@ -83,16 +85,16 @@ class StreamingAudioPlayer(
         var playbackStartedNs = 0L
         var framesWritten = 0L
         try {
+            check(!SystemAudioPolicy.isSilentOrVibrate(appContext)) {
+                "手机处于静音或振动模式，TTS 播放已阻止"
+            }
             val minBufferBytes = AudioTrack.getMinBufferSize(
                 sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(sampleRate / 5 * 2)
             val bufferBytes = max(minBufferBytes, sampleRate * 2 * 2)
             localTrack = AudioTrack.Builder()
                 .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
+                    SystemAudioPolicy.speechAttributes()
                 )
                 .setAudioFormat(
                     AudioFormat.Builder()
@@ -157,6 +159,13 @@ class StreamingAudioPlayer(
         var offset = start
         val end = start + count
         while (offset < end && !cancelled) {
+            if (SystemAudioPolicy.isSilentOrVibrate(appContext)) {
+                cancelled = true
+                failure = IllegalStateException("手机已切换为静音或振动模式，TTS 播放已停止")
+                runCatching { target.pause() }
+                runCatching { target.flush() }
+                break
+            }
             val written = target.write(pcm, offset, end - offset, AudioTrack.WRITE_BLOCKING)
             check(written > 0) { "AudioTrack 写入失败：$written" }
             offset += written

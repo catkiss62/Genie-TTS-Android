@@ -2,7 +2,6 @@ package com.catkiss62.geniettsbenchmark
 
 import android.content.Context
 import android.net.Uri
-import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Debug
@@ -341,17 +340,17 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         }
     }
 
-    fun play(audio: FloatArray, sampleRate: Int, gainDb: Double = 0.0) {
+    fun play(audio: FloatArray, sampleRate: Int, gainDb: Double = 0.0): Boolean {
         val requestedGain = 10.0.pow(gainDb / 20.0)
         val peak = audio.maxOfOrNull { abs(it).toDouble() } ?: 0.0
         val safeGain = if (peak > 0.0) min(requestedGain, 0.98 / peak) else requestedGain
         val pcm = ShortArray(audio.size) {
             (audio[it].toDouble().times(safeGain).coerceIn(-1.0, 1.0) * Short.MAX_VALUE).toInt().toShort()
         }
-        playPcm(pcm, sampleRate)
+        return playPcm(pcm, sampleRate)
     }
 
-    fun playReferenceAsset(relative: String) {
+    fun playReferenceAsset(relative: String): Boolean {
         val bytes = context.assets.open("benchmark/$relative").use { it.readBytes() }
         check(bytes.size >= 44 && String(bytes, 0, 4, Charsets.US_ASCII) == "RIFF") { "参考音频不是标准 WAV" }
         var channels = 0
@@ -386,20 +385,22 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         val shorts = ByteBuffer.wrap(bytes, dataOffset, dataSize).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
         val pcm = ShortArray(shorts.remaining())
         shorts.get(pcm)
-        playPcm(pcm, sampleRate)
+        return playPcm(pcm, sampleRate)
     }
 
-    private fun playPcm(pcm: ShortArray, sampleRate: Int) {
+    private fun playPcm(pcm: ShortArray, sampleRate: Int): Boolean {
         stopPlayback()
+        if (SystemAudioPolicy.isSilentOrVibrate(context)) return false
         val minBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setAudioAttributes(SystemAudioPolicy.speechAttributes())
             .setAudioFormat(AudioFormat.Builder().setSampleRate(sampleRate).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
             .setBufferSizeInBytes(max(minBuffer, pcm.size * 2))
             .setTransferMode(AudioTrack.MODE_STATIC)
             .build()
         audioTrack!!.write(pcm, 0, pcm.size)
         audioTrack!!.play()
+        return true
     }
 
     fun stopPlayback() {

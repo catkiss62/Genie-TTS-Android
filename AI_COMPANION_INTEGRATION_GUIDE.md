@@ -1,6 +1,6 @@
 # Genie-TTS → AI Companion 接入指南
 
-状态：v0.6.3 收口基线。测试引擎基于 Genie-TTS v2.0.2、GPT-SoVITS V2 权重和 Android ONNX Runtime；目标设备已完成中、英、日三语与约 500 字符分段播放真机验证。
+状态：v0.6.4 收口基线。测试引擎基于 Genie-TTS v2.0.2、GPT-SoVITS V2 权重和 Android ONNX Runtime；目标设备已完成中、英、日三语与约 500 字符分段播放真机验证。
 
 本文件面向后续接手 AI 伴侣项目的开发者或 AI。详细实验历史、失败路线和性能数据见 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。
 
@@ -19,6 +19,7 @@
 | `native_frontend_jni.cpp` | OpenJTalk JNI 桥 | 随 Android 模块移植 |
 | `GenieSymbolsV2.kt` | 三语音素到 Genie V2 ID | 原样保留 |
 | `StreamingAudioPlayer.kt` | PCM AudioTrack 播放参考实现 | 可复用底层写入逻辑；上层队列仍由 AI 伴侣管理 |
+| `SystemAudioPolicy.kt` | 普通媒体语音属性、系统静音/振动拦截 | 原样迁移；禁止退回无障碍辅助音频用途 |
 | `VoiceProfileCatalog.kt` | 稳定音色名称、用途与移植边界 | 迁移前四项；排除 `test_backup` |
 | `MainActivity.kt` | 测试 UI 与诊断编排 | 不移植，只作调用顺序参考 |
 
@@ -32,6 +33,8 @@ AI 伴侣已经具备真正的文本流式入口：`TtsPlaybackQueue.beginStream
 2. `generatePrepared`：把一个完整句子交给单一后台推理线程，返回 WAV/PCM 标识。
 3. `playPrepared`：按顺序播放已完成的音频，完成时再结束 Future。
 4. `stop`：取消未开始的队列、停止 AudioTrack；当前 ONNX 算子不能安全强杀时，在算子结束后丢弃结果。
+
+播放前必须读取系统 `AudioManager.ringerMode`。只在 `RINGER_MODE_NORMAL` 下播放；静音和振动模式都直接阻止 TTS，不提供额外开关。AudioTrack 使用 `USAGE_MEDIA + CONTENT_TYPE_SPEECH`，不得使用 `USAGE_ASSISTANCE_ACCESSIBILITY`。手机在正常响铃模式但媒体音量为零时，由系统自然保持无声。
 
 重要：Dart 层可能提前发起多个 `generatePrepared`。本地 Genie ONNX 会话必须由单一串行 worker 复用，不能让多个句子并发运行同一组会话，也不能为每段重新加载模型。
 
@@ -110,6 +113,7 @@ RTF 略大于 1 时，任意长度都不能数学上保证完全无停顿。首�
 - 不要将 19 种情绪复制成第二套 TTS 情绪系统。
 - 不要在一条回复中随机切换参考音色。
 - 不要把训练数据集打进 APK；运行时只需要转换后的模型、前端资源和参考特征。
+- 不要使用 `USAGE_ASSISTANCE_ACCESSIBILITY` 播放陪伴语音；它可能绕过用户对普通声音的静音预期。
 
 ## 最小验收顺序
 

@@ -136,7 +136,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         content.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 Android 接入收口 v0.6.3"
+            text = "Genie-TTS v2.0.2\n恬豆 V2 Android 接入收口 v0.6.4"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
@@ -367,8 +367,8 @@ class MainActivity : Activity() {
 
     private fun playLastGenerated() {
         val result = lastResult ?: return showCurrent("还没有可以回放的合成结果。")
-        engine.play(result.audio, engine.readManifest().sampleRate, result.playbackGainDb)
-        showCurrent("正在播放上次合成结果，不会重新推理。")
+        val started = engine.play(result.audio, engine.readManifest().sampleRate, result.playbackGainDb)
+        showCurrent(if (started) "正在播放上次合成结果，不会重新推理。" else mutedPlaybackMessage())
     }
 
     private fun runCurrent() = runTask("重新生成") {
@@ -379,8 +379,10 @@ class MainActivity : Activity() {
         lastResult = result
         lastResultLabel = "${item.displayTitle} · ${target.title}"
         lastResultReport = result.report(deviceLine())
-        engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
-        runOnUiThread { showCurrent("已重新推理并开始播放。") }
+        val playbackStarted = engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
+        runOnUiThread {
+            showCurrent(if (playbackStarted) "已重新推理并开始播放。" else mutedPlaybackMessage())
+        }
     }
 
     private fun runLanguageTest(test: FixedLanguageTest) = runTask(test.title) {
@@ -413,11 +415,11 @@ class MainActivity : Activity() {
         lastResult = result
         lastResultLabel = "${item.displayTitle} · ${test.title}"
         lastResultReport = result.report(deviceLine())
-        engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
+        val playbackStarted = engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
         postStatus(
             lastResultReport +
                 "\n请重点判断：是否像目标语言、音色是否仍像恬豆、发音和停顿是否自然。\n" +
-                "已开始播放；可点击“复制上次合成报告”发给我。"
+                if (playbackStarted) "已开始播放；可点击“复制上次合成报告”发给我。" else mutedPlaybackMessage()
         )
     }
 
@@ -468,8 +470,14 @@ class MainActivity : Activity() {
             appendLine("含义/测试目的：${preset.translation}")
             appendLine("动态前端校验：$goldenDiagnostic")
         }
-        engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
-        postStatus(lastResultReport + "\n已开始播放；请重点判断跨语言衔接、发音和音色是否稳定。")
+        val playbackStarted = engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
+        postStatus(
+            lastResultReport + if (playbackStarted) {
+                "\n已开始播放；请重点判断跨语言衔接、发音和音色是否稳定。"
+            } else {
+                "\n${mutedPlaybackMessage()}"
+            }
+        )
     }
 
     private fun goldenPhoneDiagnostic(actual: LongArray, expected: LongArray?): String {
@@ -484,6 +492,9 @@ class MainActivity : Activity() {
     }
 
     private fun runLongStreamTest(test: LongStreamTest) = runTask("${test.language.title}长文本试听") {
+        check(!SystemAudioPolicy.isSilentOrVibrate(this)) {
+            "手机处于静音或振动模式，长文本 TTS 播放已阻止"
+        }
         val root = ensureAssets()
         if (test.language == LongStreamLanguage.CHINESE) {
             check(engine.hasFrontendModel(root)) { "中文长文本需要先导入配套的自由输入 RoBERTa ONNX 文件" }
@@ -538,7 +549,7 @@ class MainActivity : Activity() {
                 val readyNs = System.nanoTime()
 
                 val margin = if (index == 0) {
-                    player = StreamingAudioPlayer(engine.readManifest().sampleRate, item.playbackGainDb)
+                    player = StreamingAudioPlayer(this, engine.readManifest().sampleRate, item.playbackGainDb)
                     activeStream = player
                     player!!.enqueue(result.audio)
                     playbackStartedNs = player!!.awaitStarted()
@@ -579,7 +590,7 @@ class MainActivity : Activity() {
             val thermalAtEnd = thermalStatus()
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.6.3 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.6.4 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.displayTitle} · ${config.label}")
                 appendLine("语言：${test.language.title} · 原文：${test.text.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
@@ -679,7 +690,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.6.3 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.6.4 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             appendLine("固定音色：日常认真（主音色）")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
@@ -742,21 +753,21 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.6.3", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.6.4", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.6.3", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.6.4", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次中文、英文或日文长文本试听。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.6.3", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.6.4", longStreamReport))
         showCurrent("上一次长文本报告已复制：$longStreamReportLabel")
     }
 
@@ -805,6 +816,7 @@ class MainActivity : Activity() {
 
     private fun timeStamp() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
     private fun deviceLine() = "设备：${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT} · ${Build.SUPPORTED_ABIS.joinToString()}"
+    private fun mutedPlaybackMessage() = "手机处于静音或振动模式：合成已完成，但 TTS 播放已阻止。"
     private fun postStatus(text: String) = runOnUiThread { updateStatus(text) }
     private fun postProgress(done: Int, total: Int, text: String) = runOnUiThread {
         progress.isIndeterminate = false

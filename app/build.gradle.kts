@@ -3,6 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val skipNativeBuild = providers.gradleProperty("skipNativeBuild")
+    .map(String::toBoolean)
+    .orElse(false)
+    .get()
+
 android {
     namespace = "com.catkiss62.geniettsbenchmark"
     compileSdk = 35
@@ -12,17 +17,21 @@ android {
         applicationId = "com.catkiss62.geniettsaudition"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.6.3"
+        versionCode = 15
+        versionName = "0.6.4"
         ndk { abiFilters += "arm64-v8a" }
-        externalNativeBuild {
-            cmake { cppFlags += "-std=c++17" }
+        if (!skipNativeBuild) {
+            externalNativeBuild {
+                cmake { cppFlags += "-std=c++17" }
+            }
         }
     }
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+    if (!skipNativeBuild) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
         }
     }
     buildTypes { release { isMinifyEnabled = false } }
