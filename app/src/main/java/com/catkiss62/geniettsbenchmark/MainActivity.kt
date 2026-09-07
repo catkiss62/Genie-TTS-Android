@@ -77,10 +77,13 @@ class MainActivity : Activity() {
 
     private lateinit var engine: GenieBenchmarkEngine
     private lateinit var frontend: ChineseFrontend
+    private lateinit var englishFrontend: EnglishFrontend
+    private lateinit var japaneseFrontend: NativeJapaneseFrontend
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
     private lateinit var buttons: LinearLayout
     private lateinit var selector: Spinner
+    private lateinit var runtimePresetSelector: Spinner
     private lateinit var freeInput: EditText
     private lateinit var stopButton: Button
     private val worker = Executors.newSingleThreadExecutor()
@@ -100,6 +103,8 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         engine = GenieBenchmarkEngine(this)
         frontend = ChineseFrontend(engine)
+        englishFrontend = EnglishFrontend(this)
+        japaneseFrontend = NativeJapaneseFrontend(this)
         setContentView(buildUi())
         showInitialState()
     }
@@ -111,13 +116,13 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         root.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 三语能力测试 v0.5.0"
+            text = "Genie-TTS v2.0.2\n恬豆 V2 动态三语前端测试 v0.6.0"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "中文完整 RoBERTa · English ARPAbet · Japanese OpenJTalk · CPU 8线程"
+            text = "中英混合单次 RoBERTa · CMUdict · Android OpenJTalk · CPU 8线程"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
@@ -130,7 +135,14 @@ class MainActivity : Activity() {
         selector = Spinner(this)
         root.addView(selector, LinearLayout.LayoutParams(-1, dp(48)))
         root.addView(TextView(this).apply {
-            text = "选择台词类型"
+            text = "动态三语前端预设"
+            textSize = 13f
+            setTextColor(Color.DKGRAY)
+        })
+        runtimePresetSelector = Spinner(this)
+        root.addView(runtimePresetSelector, LinearLayout.LayoutParams(-1, dp(48)))
+        root.addView(TextView(this).apply {
+            text = "中文基准与诊断"
             textSize = 13f
             setTextColor(Color.DKGRAY)
         })
@@ -173,6 +185,15 @@ class MainActivity : Activity() {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = showCurrent()
                 override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
+            runtimePresetSelector.adapter = ArrayAdapter(
+                this,
+                android.R.layout.simple_spinner_dropdown_item,
+                RuntimeLanguagePresets.all.map { it.displayLabel },
+            )
+            runtimePresetSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = showCurrent()
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
             addPresetRows(manifest.presets)
             addButton("自由输入") {
                 selectedPreset = null
@@ -192,7 +213,8 @@ class MainActivity : Activity() {
             })
             addButton("导入自由输入 RoBERTa 模型") { chooseFrontendModel() }
             addButton("重新生成并播放") { runCurrent() }
-            addButton("生成并播放英语测试") {
+            addButton("运行所选动态三语预设并播放") { runRuntimePreset() }
+            addButton("英语固定音素基准") {
                 runLanguageTest(
                     FixedLanguageTest(
                         "native_english", "英语固定测试", NATIVE_ENGLISH_TEXT,
@@ -200,7 +222,7 @@ class MainActivity : Activity() {
                     )
                 )
             }
-            addButton("生成并播放日语测试") {
+            addButton("日语固定音素基准") {
                 runLanguageTest(
                     FixedLanguageTest(
                         "native_japanese", "日语固定测试", NATIVE_JAPANESE_TEXT,
@@ -262,25 +284,31 @@ class MainActivity : Activity() {
 
     private fun selectedTextTitle() = selectedPreset?.title ?: "自由输入"
     private fun selectedText() = selectedPreset?.text ?: freeInput.text.toString()
+    private fun selectedRuntimePreset(): RuntimeLanguagePreset =
+        RuntimeLanguagePresets.all[runtimePresetSelector.selectedItemPosition.coerceIn(RuntimeLanguagePresets.all.indices)]
 
     private fun showCurrent(extra: String? = null) {
         val item = currentCase()
         val modelReady = preparedRoot?.let { engine.hasFrontendModel(it) } == true
         status.text = buildString {
+            val runtimePreset = selectedRuntimePreset()
             appendLine(deviceLine())
             appendLine("当前候选：${item.title}")
             appendLine("参考台词：${item.referenceText}")
             if (item.playbackGainDb != 0.0) appendLine("播放响度校准：${"%+.1f".format(item.playbackGainDb)} dB")
             appendLine("当前台词：${selectedTextTitle()}")
             appendLine(selectedText())
+            appendLine("动态三语预设：${runtimePreset.displayLabel}")
+            appendLine(runtimePreset.text)
+            appendLine("含义/目的：${runtimePreset.translation}")
             appendLine("自由输入模型：${if (modelReady) "已导入" else "尚未导入或尚未检测"}")
             appendLine("上次合成：${lastResultLabel ?: "无"}")
             lastResult?.let {
                 appendLine("端到端 ${it.endToEndMs} ms · 核心 ${it.totalInferenceMs} ms · RTF ${"%.3f".format(it.coreRtf)}")
             }
             if (extra != null) appendLine("\n$extra")
-            appendLine("\n中文预设使用 FP32 RoBERTa；自由输入和长文本使用导入的 INT8 RoBERTa。")
-            appendLine("英日固定测试使用 Genie 官方音素体系与零 BERT，用来验证模型本身的三语能力。")
+            appendLine("\n中文预设使用 FP32 RoBERTa；动态中英混合仅运行一次导入的 INT8 Chinese RoBERTa。")
+            appendLine("动态英文使用 CMUdict/ARPAbet，动态日语使用 Android OpenJTalk；两者按官方方案使用零 BERT。")
         }
     }
 
@@ -338,6 +366,68 @@ class MainActivity : Activity() {
                 "\n请重点判断：是否像目标语言、音色是否仍像恬豆、发音和停顿是否自然。\n" +
                 "已开始播放；可点击“复制上次合成报告”发给我。"
         )
+    }
+
+    private fun runRuntimePreset() = runTask("动态三语前端") {
+        val started = System.nanoTime()
+        val root = ensureAssets()
+        val item = currentCase()
+        val preset = selectedRuntimePreset()
+        val bertDim = engine.readManifest().frontend.bertDim
+        postStatus("${item.title} · ${preset.displayLabel}：正在运行手机端语言前端……")
+        val prepared = when (preset.mode) {
+            RuntimeLanguageMode.HYBRID -> {
+                check(engine.hasFrontendModel(root)) { "中英混合模式需要先导入配套的自由输入 RoBERTa ONNX 文件" }
+                engine.prepareFrontendAssets(root, ::postStatus)
+                frontend.prepareHybrid(root, preset.text, englishFrontend, ::postStatus)
+            }
+            RuntimeLanguageMode.ENGLISH -> englishFrontend.prepare(preset.text, bertDim, ::postStatus)
+            RuntimeLanguageMode.JAPANESE -> japaneseFrontend.prepare(preset.text, bertDim, ::postStatus)
+        }
+        val goldenDiagnostic = goldenPhoneDiagnostic(prepared.sequence, preset.expectedPhones)
+        val featureTitle = when (preset.mode) {
+            RuntimeLanguageMode.HYBRID -> "Chinese RoBERTa + English ARPAbet"
+            RuntimeLanguageMode.ENGLISH -> "English CMUdict/ARPAbet"
+            RuntimeLanguageMode.JAPANESE -> "Android OpenJTalk 1.11"
+        }
+        val featureDescription = when (preset.mode) {
+            RuntimeLanguageMode.HYBRID -> "中文非零 BERT + 英文零 BERT · 单次 TTS 推理"
+            RuntimeLanguageMode.ENGLISH -> "运行时 CMUdict/热词/逐字母回退 · 零 BERT"
+            RuntimeLanguageMode.JAPANESE -> "运行时 OpenJTalk 音素与韵律 · 零 BERT"
+        }
+        val verified = prepared.copy(diagnostic = prepared.diagnostic + " · " + goldenDiagnostic)
+        val modelLoad = engine.loadModels(root, config)
+        val result = engine.runPrepared(
+            root = root,
+            case = item,
+            prepared = verified,
+            modelLoad = modelLoad,
+            requestStartedNs = started,
+            targetTitle = preset.displayLabel,
+            featureModeTitle = featureTitle,
+            featureDescription = featureDescription,
+            shouldCancel = { cancelRequested },
+        )
+        lastResult = result
+        lastResultLabel = "${item.title} · ${preset.displayLabel}"
+        lastResultReport = buildString {
+            append(result.report(deviceLine()))
+            appendLine("含义/测试目的：${preset.translation}")
+            appendLine("动态前端校验：$goldenDiagnostic")
+        }
+        engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
+        postStatus(lastResultReport + "\n已开始播放；请重点判断跨语言衔接、发音和音色是否稳定。")
+    }
+
+    private fun goldenPhoneDiagnostic(actual: LongArray, expected: LongArray?): String {
+        if (expected == null) return "中英混合结构检查（无固定黄金序列）"
+        if (actual.contentEquals(expected)) return "与官方桌面前端黄金音素完全一致（${actual.size}/${expected.size}）"
+        val mismatch = (0 until minOf(actual.size, expected.size)).firstOrNull { actual[it] != expected[it] }
+        return if (mismatch != null) {
+            "未匹配黄金音素：第 ${mismatch + 1} 项 ${actual[mismatch]} != ${expected[mismatch]}（${actual.size}/${expected.size}）"
+        } else {
+            "未匹配黄金音素：长度 ${actual.size} != ${expected.size}"
+        }
     }
 
     private fun runLongStreamTest() = runTask("长文本流式测试") {
@@ -407,7 +497,7 @@ class MainActivity : Activity() {
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.5.0 长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.6.0 长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.title} · ${config.label}")
                 appendLine("原文：${LONG_STREAM_TEXT.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
@@ -502,7 +592,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.5.0 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.6.0 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             appendLine("固定音色：候选 1（日常主音色）")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
@@ -565,21 +655,21 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.5.0", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.6.0", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.5.0", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.6.0", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次约 500 字分段流式测试。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.5.0", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.6.0", longStreamReport))
         showCurrent("长文本流式报告已复制。")
     }
 
@@ -620,6 +710,7 @@ class MainActivity : Activity() {
         progress.visibility = if (value) View.VISIBLE else View.GONE
         if (value) progress.isIndeterminate = true
         selector.isEnabled = !value
+        runtimePresetSelector.isEnabled = !value
         freeInput.isEnabled = !value && selectedPreset == null
         fun update(view: View) {
             if (view is Button) view.isEnabled = if (::stopButton.isInitialized && view === stopButton) value else !value
@@ -633,6 +724,7 @@ class MainActivity : Activity() {
         activeStream?.cancel()
         worker.shutdownNow()
         frontend.close()
+        japaneseFrontend.close()
         engine.close()
         super.onDestroy()
     }

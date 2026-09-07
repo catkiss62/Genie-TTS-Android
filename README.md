@@ -2,6 +2,20 @@
 
 这是一个面向 Android ARM64 手机的 Genie-TTS v2.0.2 真机验证项目。
 
+开发结论、测试数据、私有资源说明和后续接入清单集中记录在 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。新窗口或新维护者请先读总账，再继续修改。
+
+## v0.6.0：手机端动态中英日三语前端
+
+在 v0.5.0 已证实恬豆权重具备三语声学能力后，本版把固定音素验证扩展为运行时前端：
+
+- 中文模式允许句中混入英文。中文片段只运行一次 INT8 Chinese RoBERTa，英文片段使用 CMUdict/ARPAbet 与零 BERT，最后合成一条序列并只运行一次 TTS；
+- 内置 `DeepSeek`、`token`、`AI`、`API`、`GPT`、`CPU`、`GPU`、`ONNX` 热词，未命中的英文先查 CMUdict，仍未命中时逐字母读出，不会静默跳过；
+- 纯英文模式独立使用 CMUdict/ARPAbet；纯日语模式独立使用 Android 原生 OpenJTalk 1.11；
+- 英文与日语继续遵循 Genie 官方做法使用零 BERT，不增加第二套语言模型；
+- 新增 4 条中英混合、4 条英文、4 条日语预设。英日预设会将手机端动态音素与桌面官方前端的黄金序列比较，差异直接写入报告。
+
+OpenJTalk 词典原始大小约 103 MB，APK 压缩后的增量明显更小；首次运行日语时会释放到应用私有目录，后续直接复用。公开仓库不提交这些二进制资源，维护者可运行 `Prepare OpenJTalk Android assets` 工作流取得固定版本资源，再放入对应的 `assets/openjtalk` 与 `jniLibs/arm64-v8a` 目录。
+
 ## v0.5.0：恬豆 V2 三语声学能力验证
 
 新增“生成并播放英语测试”和“生成并播放日语测试”两个独立按钮。英语固定句使用 Genie v2 的 ARPAbet 音素，日语固定句使用 Genie 的 OpenJTalk 音素（含重音与促音标记）；两者均按 Genie 官方推理逻辑使用全零 BERT。按钮跟随当前候选参考音色，完整运行 GPT 与 SoVITS，并生成可复制的推理报告。

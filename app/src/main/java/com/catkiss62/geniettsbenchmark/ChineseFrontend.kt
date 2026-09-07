@@ -93,6 +93,101 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
         return prepared
     }
 
+    fun prepareHybrid(
+        root: File,
+        original: String,
+        english: EnglishFrontend,
+        progress: (String) -> Unit,
+    ): PreparedText {
+        data class Part(val english: Boolean, val text: String, var positions: IntArray = IntArray(0))
+
+        val text = original.trim()
+        require(text.isNotEmpty()) { "中英混合测试文本不能为空" }
+        val started = System.nanoTime()
+        val info = engine.readManifest().frontend
+        ensureDictionaries(root, info, progress)
+        val parts = ArrayList<Part>()
+        val englishPattern = Regex("[A-Za-z]+(?:'[A-Za-z]+)?")
+        var cursor = 0
+        englishPattern.findAll(text).forEach { match ->
+            if (match.range.first > cursor) {
+                normalizeSegment(text.substring(cursor, match.range.first)).takeIf(String::isNotEmpty)?.let {
+                    parts += Part(false, it)
+                }
+            }
+            parts += Part(true, match.value)
+            cursor = match.range.last + 1
+        }
+        if (cursor < text.length) {
+            normalizeSegment(text.substring(cursor)).takeIf(String::isNotEmpty)?.let { parts += Part(false, it) }
+        }
+        require(parts.any { it.english } && parts.any { !it.english && it.text.any { c -> c in '\u4e00'..'\u9fff' } }) {
+            "这不是中英混合文本"
+        }
+
+        val skeleton = StringBuilder(".")
+        parts.filterNot { it.english }.forEachIndexed { index, part ->
+            if (index > 0 && skeleton.lastOrNull() !in setOf(',', '.', '!', '?')) skeleton.append(',')
+            part.positions = IntArray(part.text.length) { charIndex ->
+                skeleton.length.also { skeleton.append(part.text[charIndex]) }
+            }
+        }
+        val tokenIds = LongArray(skeleton.length + 2)
+        tokenIds[0] = 101L
+        skeleton.forEachIndexed { index, char -> tokenIds[index + 1] = vocab!!.getOrDefault(char.toString(), 100L) }
+        tokenIds[tokenIds.lastIndex] = 102L
+        progress("正在一次性运行中英混合句的 Chinese RoBERTa……")
+        val rawBert = runRoberta(root, info, tokenIds)
+        check(rawBert.size == (skeleton.length + 2) * info.bertDim) { "中英混合 RoBERTa 输出尺寸异常" }
+
+        val phoneIds = ArrayList<Long>()
+        val bertRows = ArrayList<Int>()
+        phoneIds += punctuation!!.getValue(".").single().single()
+        bertRows += 1
+        var dictionaryHits = 0
+        var hotwordHits = 0
+        var spelledFallbacks = 0
+        parts.forEach { part ->
+            if (part.english) {
+                val result = english.phoneIds(part.text, progress)
+                phoneIds.addAll(result.sequence.toList())
+                repeat(result.sequence.size) { bertRows += -1 }
+                dictionaryHits += result.dictionaryHits
+                hotwordHits += result.hotwordHits
+                spelledFallbacks += result.spelledFallbacks
+            } else {
+                val result = phonesFor(part.text, info.maxPhraseChars)
+                var offset = 0
+                result.word2ph.forEachIndexed { charIndex, count ->
+                    repeat(count) { localPhone ->
+                        phoneIds += result.sequence[offset + localPhone]
+                        bertRows += part.positions[charIndex] + 1
+                    }
+                    offset += count
+                }
+            }
+        }
+        val sequence = phoneIds.toLongArray()
+        val expanded = FloatArray(sequence.size * info.bertDim)
+        bertRows.forEachIndexed { target, sourceRow ->
+            if (sourceRow >= 0) {
+                System.arraycopy(rawBert, sourceRow * info.bertDim, expanded, target * info.bertDim, info.bertDim)
+            }
+        }
+        check(expanded.any { it != 0f } && expanded.all(Float::isFinite)) { "中英混合 BERT 特征无效" }
+        val elapsed = (System.nanoTime() - started) / 1_000_000L
+        return PreparedText(
+            text = text,
+            normalizedText = parts.joinToString("") { it.text },
+            sequence = sequence,
+            bert = expanded,
+            bertDim = info.bertDim,
+            frontendMs = elapsed,
+            diagnostic = "中英分段${parts.size} · Chinese RoBERTa 仅1次 · 英文词典命中$dictionaryHits · " +
+                "热词命中$hotwordHits · 逐字母回退$spelledFallbacks · ${sequence.size}音素",
+        )
+    }
+
     private fun ensureDictionaries(root: File, info: FrontendSpec, progress: (String) -> Unit) {
         if (vocab != null) return
         progress("首次加载手机端中文词典……")
@@ -219,6 +314,12 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
         char in '\u3040'..'\u30ff' || char in '\u31f0'..'\u31ff' || char in '\uff66'..'\uff9d'
 
     private fun normalize(text: String): String {
+        val segment = normalizeSegment(text)
+        require(segment.any { it in '\u4e00'..'\u9fff' }) { "没有找到可生成的中文或英文字母内容" }
+        return ".$segment"
+    }
+
+    private fun normalizeSegment(text: String): String {
         val digits = mapOf('0' to '零', '1' to '一', '2' to '二', '3' to '三', '4' to '四',
             '5' to '五', '6' to '六', '7' to '七', '8' to '八', '9' to '九')
         val replacements = mapOf(
@@ -227,7 +328,7 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
             '~' to '…', '～' to '…'
         )
         val allowedPunctuation = setOf('!', '?', '…', ',', '.', '-')
-        val output = StringBuilder(".")
+        val output = StringBuilder()
         text.replace("...", "…").replace("快看快看", "快看，快看").forEach { char ->
             val normalized = when {
                 char in digits -> digits.getValue(char)
@@ -239,7 +340,6 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
                 output.append(normalized)
             }
         }
-        require(output.any { it in '\u4e00'..'\u9fff' }) { "没有找到可生成的中文或英文字母内容" }
         return output.toString()
     }
 

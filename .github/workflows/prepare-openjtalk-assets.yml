@@ -17,7 +17,9 @@ jobs:
     steps:
       - name: Download pinned Android library
         run: |
-          curl -fL --retry 3             https://github.com/ayutaz/openjtalk-native/releases/download/v1.0.1/openjtalk-native-android.tar.gz             -o native.tar.gz
+          curl -fL --retry 3 \
+            https://github.com/ayutaz/openjtalk-native/releases/download/v1.0.1/openjtalk-native-android.tar.gz \
+            -o native.tar.gz
           echo "7805ac88c8cf3a2aa55fa9b32ce1008b53e24dea9188c6cc32dbbe87be292d1f  native.tar.gz" | sha256sum -c -
           mkdir -p native stage/jniLibs/arm64-v8a
           tar -xzf native.tar.gz -C native
@@ -28,7 +30,9 @@ jobs:
 
       - name: Download pinned OpenJTalk dictionary
         run: |
-          curl -fL --retry 3             https://github.com/r9y9/open_jtalk/releases/download/v1.11.1/open_jtalk_dic_utf_8-1.11.tar.gz             -o dictionary.tar.gz
+          curl -fL --retry 3 \
+            https://github.com/r9y9/open_jtalk/releases/download/v1.11.1/open_jtalk_dic_utf_8-1.11.tar.gz \
+            -o dictionary.tar.gz
           echo "fe6ba0e43542cef98339abdffd903e062008ea170b04e7e2a35da805902f382a  dictionary.tar.gz" | sha256sum -c -
           mkdir -p dictionary stage/assets/openjtalk
           tar -xzf dictionary.tar.gz -C dictionary
