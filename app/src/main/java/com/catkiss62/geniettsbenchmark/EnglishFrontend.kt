@@ -2,7 +2,6 @@ package com.catkiss62.geniettsbenchmark
 
 import android.content.Context
 import java.util.Locale
-import java.util.zip.GZIPInputStream
 
 data class EnglishPhoneResult(
     val sequence: LongArray,
@@ -98,7 +97,8 @@ class EnglishFrontend(private val context: Context) {
         if (dictionary != null) return
         progress("首次加载英文 CMU 发音词典……")
         val loaded = HashMap<String, LongArray>(140_000)
-        GZIPInputStream(context.assets.open("frontend/english/cmudict.rep.gz")).bufferedReader().useLines { lines ->
+        // Android's asset packager expands .gz inputs and removes the extension.
+        context.assets.open("frontend/english/cmudict.rep").bufferedReader().useLines { lines ->
             lines.forEach { line ->
                 if (line.isBlank() || line.startsWith(";;;")) return@forEach
                 val split = line.trim().split(Regex("\\s+"))
