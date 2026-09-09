@@ -43,21 +43,3 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 1
-      - name: Stage official Android APK signing tools
-        shell: bash
-        run: |
-          tools_dir="$ANDROID_SDK_ROOT/build-tools/37.0.0"
-          test -x "$tools_dir/apksigner"
-          test -f "$tools_dir/lib/apksigner.jar"
-          test -x "$tools_dir/zipalign"
-          mkdir -p build/apk-signing-tools/lib
-          cp "$tools_dir/apksigner" build/apk-signing-tools/
-          cp "$tools_dir/zipalign" build/apk-signing-tools/
-          cp "$tools_dir/lib/apksigner.jar" build/apk-signing-tools/lib/
-      - name: Upload official Android APK signing tools
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-apk-signing-tools-37
-          path: build/apk-signing-tools
-          if-no-files-found: error
-          retention-days: 1
