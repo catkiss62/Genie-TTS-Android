@@ -8,6 +8,8 @@ import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.text.InputType
+import android.text.method.PasswordTransformationMethod
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -24,8 +26,12 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 class MainActivity : Activity() {
     companion object {
@@ -95,6 +101,33 @@ class MainActivity : Activity() {
         val bufferMarginMs: Long?,
     )
 
+    private sealed interface DialogueEvent {
+        data class Segment(
+            val index: Int,
+            val text: String,
+            val closedAfterStartMs: Long,
+            val textQueueDepth: Int,
+        ) : DialogueEvent
+
+        data class Complete(
+            val fullText: String,
+            val finishedAfterStartMs: Long,
+            val apiResult: DeepSeekStreamResult?,
+        ) : DialogueEvent
+
+        data class Failure(val error: Throwable) : DialogueEvent
+    }
+
+    private data class DialogueSegmentRun(
+        val index: Int,
+        val text: String,
+        val closedAfterStartMs: Long,
+        val textQueueDepth: Int,
+        val audioReadyAfterStartMs: Long,
+        val bufferMarginMs: Long?,
+        val result: BenchmarkResult,
+    )
+
     private lateinit var engine: GenieBenchmarkEngine
     private lateinit var frontend: ChineseFrontend
     private var englishFrontend: EnglishFrontend? = null
@@ -105,6 +138,12 @@ class MainActivity : Activity() {
     private lateinit var selector: Spinner
     private lateinit var runtimePresetSelector: Spinner
     private lateinit var freeInput: EditText
+    private lateinit var dialogueLanguageSelector: Spinner
+    private lateinit var dialogueLengthSelector: Spinner
+    private lateinit var dialoguePromptInput: EditText
+    private lateinit var deepSeekModelSelector: Spinner
+    private lateinit var deepSeekApiKeyInput: EditText
+    private lateinit var dialogueOutput: TextView
     private lateinit var stopButton: Button
     private lateinit var pageScroll: ScrollView
     private val worker = Executors.newSingleThreadExecutor()
@@ -117,14 +156,21 @@ class MainActivity : Activity() {
     private var diagnosticReport = ""
     private var longStreamReport = ""
     private var longStreamReportLabel = "无"
+    private var dialogueReport = ""
+    private var dialogueReportLabel = "无"
+    private lateinit var apiKeyStore: SecureApiKeyStore
     @Volatile private var activeStream: StreamingAudioPlayer? = null
+    @Volatile private var activeDeepSeekClient: DeepSeekStreamClient? = null
     @Volatile private var cancelRequested = false
+    @Volatile private var cancelRequestedNs = 0L
+    @Volatile private var cancelAppliedNs = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         engine = GenieBenchmarkEngine(this)
         frontend = ChineseFrontend(engine)
+        apiKeyStore = SecureApiKeyStore(this)
         setContentView(buildUi())
         showInitialState()
     }
@@ -136,7 +182,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         content.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 Android 接入收口 v0.6.4"
+            text = "Genie-TTS v2.0.2\n恬豆 V2 Android 流式联调 v0.7.0"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
@@ -278,11 +324,113 @@ class MainActivity : Activity() {
                 runLongStreamTest(LongStreamTest(LongStreamLanguage.JAPANESE, LONG_STREAM_TEXT_JA, 42, 54))
             }
             addButton("复制上一次长文本报告") { copyLongStreamReport() }
+
+            buttons.addView(TextView(this).apply {
+                text = "DeepSeek / 模拟 LLM 真流式联调"
+                textSize = 17f
+                setTextColor(Color.rgb(50, 37, 86))
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setPadding(0, dp(16), 0, dp(6))
+            })
+            buttons.addView(TextView(this).apply {
+                text = "选择 TTS 语言；普通与约 1000 字共用同一流水线，不创建重复聊天页面。"
+                textSize = 12f
+                setTextColor(Color.DKGRAY)
+                setPadding(0, 0, 0, dp(4))
+            })
+            dialogueLanguageSelector = Spinner(this).apply {
+                adapter = ArrayAdapter(
+                    this@MainActivity,
+                    android.R.layout.simple_spinner_dropdown_item,
+                    DialogueLanguage.entries.map { it.title },
+                )
+            }
+            buttons.addView(dialogueLanguageSelector, LinearLayout.LayoutParams(-1, dp(48)))
+            dialogueLengthSelector = Spinner(this).apply {
+                adapter = ArrayAdapter(
+                    this@MainActivity,
+                    android.R.layout.simple_spinner_dropdown_item,
+                    DialogueLengthMode.entries.map { it.title },
+                )
+            }
+            buttons.addView(dialogueLengthSelector, LinearLayout.LayoutParams(-1, dp(48)))
+            dialoguePromptInput = EditText(this).apply {
+                hint = "发给 DeepSeek 的测试消息"
+                setText("说说你今天想到的一件有趣小事。")
+                minLines = 2
+                maxLines = 4
+                setTextColor(Color.rgb(35, 29, 48))
+                setHintTextColor(Color.GRAY)
+                setBackgroundColor(Color.WHITE)
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+            }
+            buttons.addView(dialoguePromptInput, LinearLayout.LayoutParams(-1, -2).apply {
+                bottomMargin = dp(6)
+            })
+            deepSeekModelSelector = Spinner(this).apply {
+                adapter = ArrayAdapter(
+                    this@MainActivity,
+                    android.R.layout.simple_spinner_dropdown_item,
+                    DeepSeekModelCatalog.all.map { it.title },
+                )
+                val savedModel = apiKeyStore.loadModel()
+                setSelection(DeepSeekModelCatalog.all.indexOfFirst { it.id == savedModel }.coerceAtLeast(0))
+            }
+            buttons.addView(deepSeekModelSelector, LinearLayout.LayoutParams(-1, dp(48)).apply {
+                bottomMargin = dp(6)
+            })
+            deepSeekApiKeyInput = EditText(this).apply {
+                hint = if (apiKeyStore.loadApiKey() == null) {
+                    "输入 DeepSeek API Key（不会写入仓库或报告）"
+                } else {
+                    "API Key 已加密保存；留空表示继续使用"
+                }
+                isSingleLine = true
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                transformationMethod = PasswordTransformationMethod.getInstance()
+                setTextColor(Color.rgb(35, 29, 48))
+                setHintTextColor(Color.GRAY)
+                setBackgroundColor(Color.WHITE)
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+            }
+            buttons.addView(deepSeekApiKeyInput, LinearLayout.LayoutParams(-1, dp(48)).apply {
+                bottomMargin = dp(6)
+            })
+            val keyButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            keyButtons.addView(Button(this).apply {
+                text = "保存 API Key"
+                isAllCaps = false
+                setOnClickListener { saveDeepSeekKey() }
+            }, LinearLayout.LayoutParams(0, dp(44), 1f))
+            keyButtons.addView(Button(this).apply {
+                text = "清除 API Key"
+                isAllCaps = false
+                setOnClickListener { clearDeepSeekKey() }
+            }, LinearLayout.LayoutParams(0, dp(44), 1f))
+            buttons.addView(keyButtons, LinearLayout.LayoutParams(-1, dp(48)))
+            addButton("运行模拟流式联调并播放") { runDialogueStream(DialogueStreamSource.SIMULATED) }
+            addButton("运行 DeepSeek API 真流式并播放") { runDialogueStream(DialogueStreamSource.DEEPSEEK) }
+            addButton("复制上一次流式联调报告") { copyDialogueReport() }
+            dialogueOutput = TextView(this).apply {
+                text = "流式回复会显示在这里。"
+                textSize = 13f
+                setTextColor(Color.rgb(35, 29, 48))
+                setTextIsSelectable(true)
+                setBackgroundColor(Color.WHITE)
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+            }
+            buttons.addView(dialogueOutput, LinearLayout.LayoutParams(-1, -2).apply {
+                bottomMargin = dp(8)
+            })
+
             addButton("运行自动诊断（不播放）") { runDiagnostic() }
             addButton("复制诊断报告") { copyDiagnosticReport() }
             stopButton = addButton("停止当前任务") {
+                cancelRequestedNs = System.nanoTime()
                 cancelRequested = true
+                activeDeepSeekClient?.cancel()
                 activeStream?.cancel()
+                cancelAppliedNs = System.nanoTime()
                 updateStatus("已请求停止；当前 ONNX 算子结束后会退出。")
             }.apply { isEnabled = false }
             showCurrent()
@@ -355,6 +503,8 @@ class MainActivity : Activity() {
             appendLine("英文前端：${if (englishFrontend == null) "未加载" else "已按需加载"} · 日文前端：${if (japaneseFrontend == null) "未加载" else "已按需加载"}")
             appendLine("上次合成：${lastResultLabel ?: "无"}")
             appendLine("上一次长文本报告：$longStreamReportLabel")
+            appendLine("上一次流式联调报告：$dialogueReportLabel")
+            appendLine("DeepSeek API Key：${if (apiKeyStore.loadApiKey() == null) "未保存" else "已在本机加密保存"}")
             lastResult?.let {
                 appendLine("端到端 ${it.endToEndMs} ms · 核心 ${it.totalInferenceMs} ms · RTF ${"%.3f".format(it.coreRtf)}")
             }
@@ -590,7 +740,7 @@ class MainActivity : Activity() {
             val thermalAtEnd = thermalStatus()
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.6.4 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.0 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.displayTitle} · ${config.label}")
                 appendLine("语言：${test.language.title} · 原文：${test.text.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
@@ -623,6 +773,370 @@ class MainActivity : Activity() {
             if (cancelRequested) player?.cancel()
             player?.close()
         }
+    }
+
+    private fun saveDeepSeekKey() {
+        try {
+            val entered = deepSeekApiKeyInput.text.toString().trim()
+            if (entered.isNotEmpty()) apiKeyStore.saveApiKey(entered)
+            check(apiKeyStore.loadApiKey() != null) { "请先输入 DeepSeek API Key" }
+            apiKeyStore.saveModel(selectedDeepSeekModel())
+            deepSeekApiKeyInput.setText("")
+            deepSeekApiKeyInput.hint = "API Key 已加密保存；留空表示继续使用"
+            showCurrent("DeepSeek API Key 已使用 Android Keystore 加密保存，只存在于本应用私有数据中。")
+        } catch (error: Throwable) {
+            showCurrent("保存 API Key 失败：${error.message}")
+        }
+    }
+
+    private fun clearDeepSeekKey() {
+        apiKeyStore.clearApiKey()
+        deepSeekApiKeyInput.setText("")
+        deepSeekApiKeyInput.hint = "输入 DeepSeek API Key（不会写入仓库或报告）"
+        showCurrent("已经清除本机保存的 DeepSeek API Key。")
+    }
+
+    private fun copyDialogueReport() {
+        if (dialogueReport.isBlank()) return showCurrent("请先完成或中断一次流式联调测试。")
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.7.0", dialogueReport))
+        showCurrent("上一次流式联调报告已复制：$dialogueReportLabel")
+    }
+
+    private fun runDialogueStream(source: DialogueStreamSource) {
+        val language = DialogueLanguage.entries[
+            dialogueLanguageSelector.selectedItemPosition.coerceIn(DialogueLanguage.entries.indices)
+        ]
+        val lengthMode = DialogueLengthMode.entries[
+            dialogueLengthSelector.selectedItemPosition.coerceIn(DialogueLengthMode.entries.indices)
+        ]
+        val userPrompt = dialoguePromptInput.text.toString().trim().ifBlank { "说说你今天想到的一件小事。" }
+        val model = selectedDeepSeekModel()
+        val enteredKey = deepSeekApiKeyInput.text.toString().trim()
+        val apiKey = if (source == DialogueStreamSource.DEEPSEEK) {
+            enteredKey.ifBlank { apiKeyStore.loadApiKey().orEmpty() }.also {
+                if (it.isBlank()) return showCurrent("请先输入并保存 DeepSeek API Key。")
+            }
+        } else {
+            ""
+        }
+        apiKeyStore.saveModel(model)
+        dialogueOutput.text = ""
+        runTask("${source.title} · ${lengthMode.title}") {
+            runDialoguePipeline(source, language, lengthMode, userPrompt, model, apiKey)
+        }
+    }
+
+    private fun runDialoguePipeline(
+        source: DialogueStreamSource,
+        language: DialogueLanguage,
+        lengthMode: DialogueLengthMode,
+        userPrompt: String,
+        model: String,
+        apiKey: String,
+    ) {
+        check(!SystemAudioPolicy.isSilentOrVibrate(this)) {
+            "手机处于静音或振动模式，流式对话 TTS 播放已阻止"
+        }
+        val root = ensureAssets()
+        if (language == DialogueLanguage.CHINESE) {
+            check(engine.hasFrontendModel(root)) { "中文流式联调需要先导入配套的自由输入 RoBERTa ONNX 文件" }
+            engine.prepareFrontendAssets(root, ::postStatus)
+            frontend.clearPreparedCache()
+        }
+        engine.stopPlayback()
+        val item = currentCase()
+        val testStartedNs = System.nanoTime()
+        cancelRequestedNs = 0L
+        cancelAppliedNs = 0L
+        val firstDeltaNs = AtomicLong(0L)
+        val firstSegmentClosedNs = AtomicLong(0L)
+        val maximumTextQueueDepth = AtomicInteger(0)
+        // A normal 800–1200 character answer is only a few dozen segments. Keeping the full
+        // text stream buffered lets the report distinguish API speed from the slower TTS worker,
+        // while the fixed token limit still prevents unbounded memory growth.
+        val events = ArrayBlockingQueue<DialogueEvent>(64)
+        val deepSeekClient = if (source == DialogueStreamSource.DEEPSEEK) DeepSeekStreamClient() else null
+        activeDeepSeekClient = deepSeekClient
+
+        fun offerEvent(event: DialogueEvent) {
+            while (!cancelRequested) {
+                if (events.offer(event, 100L, TimeUnit.MILLISECONDS)) {
+                    val segmentDepth = events.count { it is DialogueEvent.Segment }
+                    maximumTextQueueDepth.accumulateAndGet(segmentDepth, ::maxOf)
+                    return
+                }
+            }
+            throw CancellationException("用户停止了流式联调")
+        }
+
+        val producer = Thread({
+            val segmenter = StreamingDialogueSegmenter(language)
+            val fullText = StringBuilder()
+            var segmentIndex = 0
+            try {
+                fun acceptDelta(delta: String) {
+                    if (delta.isEmpty()) return
+                    val now = System.nanoTime()
+                    firstDeltaNs.compareAndSet(0L, now)
+                    fullText.append(delta)
+                    postDialogueDelta(delta)
+                    segmenter.addDelta(delta).forEach { closed ->
+                        val closedNs = System.nanoTime()
+                        firstSegmentClosedNs.compareAndSet(0L, closedNs)
+                        segmentIndex += 1
+                        offerEvent(
+                            DialogueEvent.Segment(
+                                index = segmentIndex,
+                                text = closed.text,
+                                closedAfterStartMs = (closedNs - testStartedNs) / 1_000_000L,
+                                textQueueDepth = events.size + 1,
+                            )
+                        )
+                    }
+                }
+
+                val apiResult = when (source) {
+                    DialogueStreamSource.SIMULATED -> {
+                        val fixture = DialogueFixtures.text(language, lengthMode)
+                        var offset = 0
+                        val chunkSizes = intArrayOf(3, 5, 2, 7, 4, 6)
+                        var chunkIndex = 0
+                        while (offset < fixture.length) {
+                            if (cancelRequested || Thread.currentThread().isInterrupted) {
+                                throw CancellationException("用户停止了模拟流")
+                            }
+                            val end = minOf(fixture.length, offset + chunkSizes[chunkIndex % chunkSizes.size])
+                            Thread.sleep(55L)
+                            acceptDelta(fixture.substring(offset, end))
+                            offset = end
+                            chunkIndex += 1
+                        }
+                        null
+                    }
+                    DialogueStreamSource.DEEPSEEK -> deepSeekClient!!.stream(
+                        apiKey = apiKey,
+                        model = model,
+                        systemPrompt = DialogueFixtures.systemPrompt(language, lengthMode),
+                        userPrompt = userPrompt,
+                        maxTokens = lengthMode.maxTokens,
+                        onDelta = ::acceptDelta,
+                    )
+                }
+                segmenter.finish().forEach { closed ->
+                    val closedNs = System.nanoTime()
+                    firstSegmentClosedNs.compareAndSet(0L, closedNs)
+                    segmentIndex += 1
+                    offerEvent(
+                        DialogueEvent.Segment(
+                            index = segmentIndex,
+                            text = closed.text,
+                            closedAfterStartMs = (closedNs - testStartedNs) / 1_000_000L,
+                            textQueueDepth = events.size + 1,
+                        )
+                    )
+                }
+                offerEvent(
+                    DialogueEvent.Complete(
+                        fullText = fullText.toString(),
+                        finishedAfterStartMs = (System.nanoTime() - testStartedNs) / 1_000_000L,
+                        apiResult = apiResult,
+                    )
+                )
+            } catch (error: Throwable) {
+                events.offer(DialogueEvent.Failure(error), 100L, TimeUnit.MILLISECONDS)
+            }
+        }, "Genie-TTS-dialogue-source").apply {
+            isDaemon = true
+            start()
+        }
+
+        val runs = ArrayList<DialogueSegmentRun>()
+        var player: StreamingAudioPlayer? = null
+        var playbackStartedNs = 0L
+        var queuedAudioMs = 0L
+        var sourceComplete: DialogueEvent.Complete? = null
+        var generationFinishedNs = 0L
+        var modelReadyAfterStartMs = 0L
+        var inFlight = false
+        val thermalAtStart = thermalStatus()
+        try {
+            val initialModelLoad = engine.loadModels(root, config)
+            modelReadyAfterStartMs = (System.nanoTime() - testStartedNs) / 1_000_000L
+            while (sourceComplete == null) {
+                checkCancelled()
+                val event = events.poll(250L, TimeUnit.MILLISECONDS)
+                if (event == null) {
+                    if (!producer.isAlive && events.isEmpty()) error("文字流意外结束，未收到完成事件")
+                    continue
+                }
+                when (event) {
+                    is DialogueEvent.Failure -> throw event.error
+                    is DialogueEvent.Complete -> sourceComplete = event
+                    is DialogueEvent.Segment -> {
+                        inFlight = true
+                        postStatus(
+                            "${source.title} · ${lengthMode.title}\n" +
+                                "收到第 ${event.index} 段，正在进行${language.title}前处理与 TTS……\n" +
+                                "文本队列：${events.count { it is DialogueEvent.Segment }} 段"
+                        )
+                        val segmentStartedNs = System.nanoTime()
+                        val prepared = prepareDialogueSegment(root, language, event.text)
+                        val modelLoad = if (runs.isEmpty()) initialModelLoad else engine.loadModels(root, config)
+                        val result = engine.runPrepared(
+                            root = root,
+                            case = item,
+                            prepared = prepared,
+                            modelLoad = modelLoad,
+                            requestStartedNs = segmentStartedNs,
+                            targetTitle = "${lengthMode.title}第 ${event.index} 段",
+                            featureModeTitle = dialogueFeatureTitle(language),
+                            featureDescription = dialogueFeatureDescription(language),
+                            shouldCancel = { cancelRequested },
+                        )
+                        checkCancelled()
+                        val readyNs = System.nanoTime()
+                        val margin = if (player == null) {
+                            player = StreamingAudioPlayer(this, engine.readManifest().sampleRate, item.playbackGainDb)
+                            activeStream = player
+                            player!!.enqueue(result.audio)
+                            playbackStartedNs = player!!.awaitStarted(20L)
+                            null
+                        } else {
+                            val elapsedPlaybackMs = (readyNs - playbackStartedNs) / 1_000_000L
+                            (queuedAudioMs - elapsedPlaybackMs).also { player!!.enqueue(result.audio) }
+                        }
+                        queuedAudioMs += (result.audioSeconds * 1000.0).toLong()
+                        runs += DialogueSegmentRun(
+                            index = event.index,
+                            text = event.text,
+                            closedAfterStartMs = event.closedAfterStartMs,
+                            textQueueDepth = event.textQueueDepth,
+                            audioReadyAfterStartMs = (readyNs - testStartedNs) / 1_000_000L,
+                            bufferMarginMs = margin,
+                            result = result.copy(audio = FloatArray(0)),
+                        )
+                        generationFinishedNs = readyNs
+                        inFlight = false
+                    }
+                }
+            }
+
+            check(runs.isNotEmpty()) { "DeepSeek 没有返回可以朗读的正文" }
+            checkCancelled()
+            player!!.finish()
+            val playback = player!!.awaitCompletion()
+            checkCancelled()
+            val thermalAtEnd = thermalStatus()
+            val totalCoreMs = runs.sumOf { it.result.totalInferenceMs }
+            val totalFrontendMs = runs.sumOf { it.result.frontendMs }
+            val totalAudioSeconds = runs.sumOf { it.result.audioSeconds }
+            val margins = runs.mapNotNull { it.bufferMarginMs }
+            val lateSegments = margins.count { it < 0L }
+            val firstDeltaAfterMs = firstDeltaNs.get().takeIf { it > 0L }?.let { (it - testStartedNs) / 1_000_000L }
+            val firstClosedAfterMs = firstSegmentClosedNs.get().takeIf { it > 0L }?.let { (it - testStartedNs) / 1_000_000L }
+            val firstAudioReadyMs = runs.first().audioReadyAfterStartMs
+            val firstPlaybackMs = (playback.playbackStartedNs - testStartedNs) / 1_000_000L
+            val playbackWallMs = (playback.playbackFinishedNs - playback.playbackStartedNs) / 1_000_000L
+            val totalWallMs = (playback.playbackFinishedNs - testStartedNs) / 1_000_000L
+            val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
+
+            dialogueReport = buildString {
+                appendLine("===== Genie-TTS v0.7.0 流式对话联调报告 · ${timeStamp()} =====")
+                appendLine(deviceLine())
+                appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
+                appendLine("音色：${item.displayTitle} · ${config.label}")
+                if (source == DialogueStreamSource.DEEPSEEK) appendLine("DeepSeek 模型：$model · 思考模式：关闭")
+                appendLine("测试输入：$userPrompt")
+                appendLine("输出：${sourceComplete!!.fullText.length} 字符 · ${runs.size} 段 · 单段最长 ${runs.maxOf { it.text.length }} 字符")
+                appendLine("切句：首段目标 ${language.firstTargetChars} · 后续目标 ${language.targetChars} · 硬上限 ${language.maxChars} 字符")
+                appendLine("温控状态：开始 $thermalAtStart · 结束 $thermalAtEnd")
+                appendLine("首个文字块：${firstDeltaAfterMs?.let { "$it ms" } ?: "无"}")
+                appendLine("第一段文字闭合：${firstClosedAfterMs?.let { "$it ms" } ?: "无"}")
+                appendLine("模型可用：$modelReadyAfterStartMs ms${if (initialModelLoad.loadedThisRun) " · 本轮冷加载 ${initialModelLoad.elapsedMs} ms" else " · 复用已加载模型"}")
+                appendLine("第一段音频完成：$firstAudioReadyMs ms · 首次开播：$firstPlaybackMs ms")
+                appendLine("文字流完成：${sourceComplete!!.finishedAfterStartMs} ms · 全部分段生成：${(generationFinishedNs - testStartedNs) / 1_000_000L} ms")
+                appendLine("合计音频：${"%.2f".format(totalAudioSeconds)} s · 播放阶段：$playbackWallMs ms")
+                appendLine("合计核心推理：$totalCoreMs ms · 聚合 RTF：${"%.3f".format(aggregateRtf)} · 前处理：$totalFrontendMs ms")
+                appendLine("文本队列最大深度：${maximumTextQueueDepth.get()} · 音频队列最大深度：${playback.maxQueuedSegments}")
+                appendLine("最小缓冲余量：${margins.minOrNull()?.let { "$it ms" } ?: "无"} · 迟到分段：$lateSegments/${margins.size}")
+                appendLine("AudioTrack underrun：${playback.underrunCount} · 峰值 PSS：约 ${runs.maxOf { it.result.pssMb }} MB")
+                appendLine("从点击到播放完成：$totalWallMs ms")
+                sourceComplete!!.apiResult?.let { api ->
+                    appendLine("API request id：${api.requestId ?: "无"} · finish：${api.finishReason ?: "无"}")
+                    api.usage?.let { appendLine("API tokens：输入 ${it.promptTokens} · 输出 ${it.completionTokens} · 合计 ${it.totalTokens}") }
+                }
+                runs.forEach { run ->
+                    appendLine("\n--- 第 ${run.index}/${runs.size} 段 ---")
+                    appendLine("文本：${run.text}")
+                    appendLine("文字闭合：点击后 ${run.closedAfterStartMs} ms · 提交时文本队列 ${run.textQueueDepth} 段")
+                    appendLine("音频完成：点击后 ${run.audioReadyAfterStartMs} ms · 播放前缓冲余量：${run.bufferMarginMs?.let { "$it ms" } ?: "首段"}")
+                    appendLine("前处理：${run.result.frontendMs} ms · 核心：${run.result.totalInferenceMs} ms · 音频：${"%.2f".format(run.result.audioSeconds)} s")
+                    appendLine("RTF：${"%.3f".format(run.result.coreRtf)} · Decoder：${run.result.decoderIterations} 次 · PSS：约 ${run.result.pssMb} MB")
+                }
+                appendLine("\n完整输出：\n${sourceComplete!!.fullText}")
+                appendLine("\n安全说明：报告不包含 API Key。")
+            }
+            dialogueReportLabel = "${source.title} · ${lengthMode.title} · ${language.title} · RTF ${"%.3f".format(aggregateRtf)}"
+            postStatus("流式联调完成。请先判断听感和停顿；异常时复制上一次流式联调报告。")
+        } catch (cancelled: CancellationException) {
+            val queuedSegments = events.count { it is DialogueEvent.Segment }
+            val abandoned = queuedSegments + if (inFlight) 1 else 0
+            val stoppedAfterMs = if (cancelRequestedNs > 0L && cancelAppliedNs >= cancelRequestedNs) {
+                (cancelAppliedNs - cancelRequestedNs) / 1_000_000L
+            } else null
+            dialogueReport = buildString {
+                appendLine("===== Genie-TTS v0.7.0 流式对话中断报告 · ${timeStamp()} =====")
+                appendLine(deviceLine())
+                appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
+                appendLine("结果：用户主动中断")
+                appendLine("已完成音频：${runs.size} 段 · 废弃推理/排队：$abandoned 段")
+                appendLine("文本队列最大深度：${maximumTextQueueDepth.get()}")
+                appendLine("停止按钮到播放器/网络取消调用完成：${stoppedAfterMs?.let { "$it ms" } ?: "未记录"}")
+                appendLine("第一段文字闭合：${firstSegmentClosedNs.get().takeIf { it > 0L }?.let { (it - testStartedNs) / 1_000_000L } ?: -1L} ms")
+                appendLine("中断发生：点击测试后 ${(System.nanoTime() - testStartedNs) / 1_000_000L} ms")
+                appendLine("安全说明：报告不包含 API Key。")
+            }
+            dialogueReportLabel = "已中断 · ${source.title} · ${lengthMode.title} · ${language.title}"
+            throw cancelled
+        } finally {
+            activeDeepSeekClient = null
+            deepSeekClient?.cancel()
+            producer.interrupt()
+            activeStream = null
+            player?.close()
+        }
+    }
+
+    private fun prepareDialogueSegment(root: File, language: DialogueLanguage, text: String): PreparedText {
+        val bertDim = engine.readManifest().frontend.bertDim
+        return when (language) {
+            DialogueLanguage.CHINESE -> frontend.prepare(root, text, ::postStatus)
+            DialogueLanguage.ENGLISH -> requireEnglishFrontend().prepare(text, bertDim, ::postStatus)
+            DialogueLanguage.JAPANESE -> requireJapaneseFrontend().prepare(text, bertDim, ::postStatus)
+        }
+    }
+
+    private fun selectedDeepSeekModel(): String {
+        val position = deepSeekModelSelector.selectedItemPosition
+            .coerceIn(DeepSeekModelCatalog.all.indices)
+        return DeepSeekModelCatalog.all[position].id
+    }
+
+    private fun dialogueFeatureTitle(language: DialogueLanguage): String = when (language) {
+        DialogueLanguage.CHINESE -> "完整 Chinese RoBERTa"
+        DialogueLanguage.ENGLISH -> "English CMUdict/ARPAbet"
+        DialogueLanguage.JAPANESE -> "Android OpenJTalk 1.11"
+    }
+
+    private fun dialogueFeatureDescription(language: DialogueLanguage): String = when (language) {
+        DialogueLanguage.CHINESE -> "本地 INT8；非零中文特征"
+        DialogueLanguage.ENGLISH -> "运行时 CMUdict；零 BERT"
+        DialogueLanguage.JAPANESE -> "运行时 OpenJTalk 音素与韵律；零 BERT"
+    }
+
+    private fun postDialogueDelta(delta: String) = runOnUiThread {
+        dialogueOutput.append(delta)
     }
 
     private fun prepareSelectedTarget(): TargetState {
@@ -690,7 +1204,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.6.4 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.7.0 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             appendLine("固定音色：日常认真（主音色）")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
@@ -753,21 +1267,21 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.6.4", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.7.0", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.6.4", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.7.0", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次中文、英文或日文长文本试听。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.6.4", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.7.0", longStreamReport))
         showCurrent("上一次长文本报告已复制：$longStreamReportLabel")
     }
 
@@ -831,6 +1345,11 @@ class MainActivity : Activity() {
         if (value) progress.isIndeterminate = true
         selector.isEnabled = !value
         runtimePresetSelector.isEnabled = !value
+        if (::dialogueLanguageSelector.isInitialized) dialogueLanguageSelector.isEnabled = !value
+        if (::dialogueLengthSelector.isInitialized) dialogueLengthSelector.isEnabled = !value
+        if (::dialoguePromptInput.isInitialized) dialoguePromptInput.isEnabled = !value
+        if (::deepSeekModelSelector.isInitialized) deepSeekModelSelector.isEnabled = !value
+        if (::deepSeekApiKeyInput.isInitialized) deepSeekApiKeyInput.isEnabled = !value
         freeInput.isEnabled = !value && selectedPreset == null
         fun update(view: View) {
             if (view is Button) view.isEnabled = if (::stopButton.isInitialized && view === stopButton) value else !value
@@ -841,6 +1360,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         cancelRequested = true
+        activeDeepSeekClient?.cancel()
         activeStream?.cancel()
         worker.shutdownNow()
         frontend.close()

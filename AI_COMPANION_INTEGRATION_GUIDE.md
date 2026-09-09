@@ -1,6 +1,6 @@
 # Genie-TTS → AI Companion 接入指南
 
-状态：v0.6.4 收口基线。测试引擎基于 Genie-TTS v2.0.2、GPT-SoVITS V2 权重和 Android ONNX Runtime；目标设备已完成中、英、日三语与约 500 字符分段播放真机验证。
+状态：v0.6.4 是模型与播放的收口基线；v0.7.0 在不改变该基线的前提下增加 LLM 真流式联调。测试引擎基于 Genie-TTS v2.0.2、GPT-SoVITS V2 权重和 Android ONNX Runtime；目标设备已完成中、英、日三语与约 500 字符分段播放真机验证。
 
 本文件面向后续接手 AI 伴侣项目的开发者或 AI。详细实验历史、失败路线和性能数据见 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。
 
@@ -19,6 +19,9 @@
 | `native_frontend_jni.cpp` | OpenJTalk JNI 桥 | 随 Android 模块移植 |
 | `GenieSymbolsV2.kt` | 三语音素到 Genie V2 ID | 原样保留 |
 | `StreamingAudioPlayer.kt` | PCM AudioTrack 播放参考实现 | 可复用底层写入逻辑；上层队列仍由 AI 伴侣管理 |
+| `StreamingDialogue.kt` | 三语增量切句、长度策略、模拟流夹具 | 迁移切句规则；正式项目用真实 LLM delta 替换夹具 |
+| `DeepSeekStreamClient.kt` | 最小 DeepSeek Chat Completions SSE 客户端 | 仅作联调参考；正式项目优先复用已有 API 层 |
+| `SecureApiKeyStore.kt` | Android Keystore 加密测试 Key | 正式项目若已有密钥存储则复用，不要保存第二份 |
 | `SystemAudioPolicy.kt` | 普通媒体语音属性、系统静音/振动拦截 | 原样迁移；禁止退回无障碍辅助音频用途 |
 | `VoiceProfileCatalog.kt` | 稳定音色名称、用途与移植边界 | 迁移前四项；排除 `test_backup` |
 | `MainActivity.kt` | 测试 UI 与诊断编排 | 不移植，只作调用顺序参考 |
@@ -87,7 +90,7 @@ AI 伴侣的三个设置必须独立：
 
 ## 流式与分段
 
-本项目的 500 字测试已经验证“播放上一段时串行生成下一段”。真正 DeepSeek 流式不需要再做独立模拟 APK，应在接入 AI 伴侣后使用现有队列验证：
+本项目的 500 字测试已经验证“播放上一段时串行生成下一段”。v0.7.0 又把模拟 delta 和真实 DeepSeek SSE 接到同一管线，用于在移植前测量首 token、首句闭合、首段音频、队列积压和打断；正式 AI 伴侣仍应复用已有 API 层与队列：
 
 1. 收到流式 delta；
 2. 情绪标签由现有隐藏首行解析，不进入朗读文本；
@@ -96,6 +99,8 @@ AI 伴侣的三个设置必须独立：
 5. 用户打断时同时停止 LLM 流、待生成段和播放。
 
 RTF 略大于 1 时，任意长度都不能数学上保证完全无停顿。首版保持 v0.5/v0.6.2 已验证的固定 1 秒首段预填充，不要先做自适应缓冲；真实 API 接入后再依据真机队列数据调整。
+
+联调版的 DeepSeek 下拉包含 `deepseek-v4-flash` 和临时的 `deepseek-v4.1-flash-expires-on-0910`，并统一显式关闭思考模式。临时模型失效属于 API 配置变化，不是 TTS 故障。测试 Key 由 Android Keystore 加密且不进入报告；正式移植应交给 AI 伴侣已有凭据管理。
 
 ## 已验证边界
 

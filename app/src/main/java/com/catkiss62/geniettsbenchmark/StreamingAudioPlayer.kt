@@ -6,6 +6,7 @@ import android.media.AudioTrack
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -16,6 +17,7 @@ data class StreamPlaybackSummary(
     val playbackFinishedNs: Long,
     val framesWritten: Long,
     val underrunCount: Int,
+    val maxQueuedSegments: Int,
 )
 
 /**
@@ -35,6 +37,8 @@ class StreamingAudioPlayer(
     }
 
     private val queue = LinkedBlockingQueue<Command>()
+    private val queuedSegments = AtomicInteger(0)
+    private val maxQueuedSegments = AtomicInteger(0)
     private val started = CountDownLatch(1)
     private val completed = CountDownLatch(1)
     @Volatile private var cancelled = false
@@ -49,6 +53,8 @@ class StreamingAudioPlayer(
     fun enqueue(audio: FloatArray) {
         check(!cancelled) { "流式播放已经停止" }
         check(audio.isNotEmpty()) { "不能加入空音频" }
+        val depth = queuedSegments.incrementAndGet()
+        maxQueuedSegments.accumulateAndGet(depth, ::maxOf)
         queue.put(Command.Audio(audio))
     }
 
@@ -117,6 +123,7 @@ class StreamingAudioPlayer(
                         break
                     }
                     is Command.Audio -> {
+                        queuedSegments.decrementAndGet()
                         val pcm = toPcm(command.samples)
                         var offset = 0
                         if (firstAudio) {
@@ -124,7 +131,7 @@ class StreamingAudioPlayer(
                             offset += writeFully(localTrack, pcm, 0, prefillSamples)
                             localTrack.play()
                             playbackStartedNs = System.nanoTime()
-                            summary = StreamPlaybackSummary(playbackStartedNs, 0L, 0L, 0)
+                            summary = StreamPlaybackSummary(playbackStartedNs, 0L, 0L, 0, maxQueuedSegments.get())
                             started.countDown()
                             firstAudio = false
                         }
@@ -143,7 +150,13 @@ class StreamingAudioPlayer(
             }
             val finishedNs = System.nanoTime()
             val underruns = if (android.os.Build.VERSION.SDK_INT >= 24) localTrack.underrunCount else -1
-            summary = StreamPlaybackSummary(playbackStartedNs, finishedNs, framesWritten, underruns)
+            summary = StreamPlaybackSummary(
+                playbackStartedNs,
+                finishedNs,
+                framesWritten,
+                underruns,
+                maxQueuedSegments.get(),
+            )
             runCatching { localTrack.stop() }
         } catch (error: Throwable) {
             failure = error

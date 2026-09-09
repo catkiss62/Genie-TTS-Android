@@ -4,6 +4,19 @@
 
 开发结论、测试数据、私有资源说明和后续接入清单集中记录在 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。准备移植到 AI 伴侣时直接阅读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。
 
+## v0.7.0：DeepSeek / 模拟 LLM 真流式联调
+
+本版保留 v0.6.4 的模型、三语前端、CPU 8 线程、采样参数和全部原测试，在外围增加真实对话流水线验证：
+
+- 同一页面切换普通短对话与约 1000 字长对话，以及中文、英文、日文 TTS；
+- 模拟模式用确定性增量文字排除网络波动；DeepSeek 模式直接消费 Chat Completions SSE；
+- 模型下拉固定为 `deepseek-v4-flash` 与临时 `deepseek-v4.1-flash-expires-on-0910`，均关闭思考模式；
+- 强标点到达立即提交，长无标点文本受硬上限保护；单一 ONNX worker 串行推理，AudioTrack 顺序播放；
+- 报告包含首文字块、首句闭合、首段音频、首次开播、队列深度、RTF、缓冲、underrun、PSS 和中断结果；
+- API Key 由 Android Keystore 加密保存在应用私有目录，不写入源码、日志或报告。
+
+这仍是句级流式：它缩短 LLM 与 TTS 串联等待，但不把 Genie 的单句 VITS 改造成句内 PCM 流，因此不改变已经验证的音质边界。
+
 ## v0.6.4：系统静音策略修正
 
 本版只修正播放策略，不改变模型、三语前端、采样参数、CPU 线程或长文本缓冲路径：

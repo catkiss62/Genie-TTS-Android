@@ -32,6 +32,8 @@ jobs:
           gradle-version: "8.10.2"
       - name: Compile Android source without private model assets
         run: gradle --no-daemon :app:compileDebugKotlin
+      - name: Run streaming segmenter unit tests
+        run: gradle --no-daemon -PskipNativeBuild=true :app:testDebugUnitTest
       - name: Build thin APK for code verification
         run: gradle --no-daemon -PskipNativeBuild=true :app:assembleDebug
       - name: Upload thin verification APK

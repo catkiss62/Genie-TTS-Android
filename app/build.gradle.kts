@@ -17,8 +17,8 @@ android {
         applicationId = "com.catkiss62.geniettsaudition"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.6.4"
+        versionCode = 16
+        versionName = "0.7.0"
         ndk { abiFilters += "arm64-v8a" }
         if (!skipNativeBuild) {
             externalNativeBuild {
@@ -45,4 +45,5 @@ android {
 
 dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
+    testImplementation("junit:junit:4.13.2")
 }
