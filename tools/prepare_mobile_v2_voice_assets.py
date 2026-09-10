@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build an Android audition bundle for one converted Genie V2 voice.
 
-The reference and preset BERT tensors are produced with the same character-tokenized INT8
-RoBERTa path used by ChineseFrontend.kt. Original checkpoints and reference recordings stay in
-the private build directory; only this reproducible builder belongs in the public repository.
+Chinese references use the same character-tokenized INT8 RoBERTa path as ChineseFrontend.kt;
+English and Japanese references use their native phonemes with zero BERT, matching Genie.
+Original checkpoints and recordings stay private; only this reproducible builder is public.
 """
 
 from __future__ import annotations
@@ -46,6 +46,24 @@ def write_tensor(root: Path, relative: str, name: str, array: np.ndarray) -> dic
     array.tofile(path)
     dtype = {np.dtype("float32"): "float32", np.dtype("int64"): "int64"}[array.dtype]
     return {"name": name, "file": relative, "dtype": dtype, "shape": list(array.shape)}
+
+
+def copy_seed_presets(seed_root: Path, output: Path) -> tuple[list[dict], dict, list[dict]]:
+    """Reuse target-text tensors from a validated voice bundle.
+
+    Chinese target features are independent of the speaker checkpoint and reference audio. This
+    lets a new Japanese-reference voice reuse the already verified Android Chinese frontend
+    without needing the large RoBERTa model during private packaging.
+    """
+    manifest = json.loads((seed_root / "manifest.json").read_text(encoding="utf-8"))
+    presets = manifest["presets"]
+    for preset in presets:
+        for tensor in preset["tensors"]:
+            source = seed_root / tensor["file"]
+            target = output / tensor["file"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+    return presets, manifest["frontend"], manifest["feature_modes"]
 
 
 def _external_length(tensor: onnx.TensorProto) -> int | None:
@@ -209,15 +227,26 @@ def build(args: argparse.Namespace) -> None:
     for name in ("bert_vocab.tsv", "char_phones.tsv", "phrase_phones.tsv", "punctuation_ids.tsv"):
         shutil.copyfile(shared_frontend / name, frontend_target / name)
 
-    feature_builder = MobileChineseFeatures(
-        args.roberta.resolve(), shared_frontend / "bert_vocab.tsv"
-    )
+    feature_builder = None
+    if args.roberta is not None:
+        feature_builder = MobileChineseFeatures(
+            args.roberta.resolve(), shared_frontend / "bert_vocab.tsv"
+        )
     references = json.loads(args.references_json.read_text(encoding="utf-8"))
     cases = []
     for item in references:
         audio_path = args.references_dir / item["audio"]
-        prompt = ReferenceAudio(str(audio_path), item["transcript"], "Chinese")
-        _, ref_seq, ref_bert = feature_builder.prepare(item["transcript"], leading_period=False)
+        reference_language = item.get("language", "Chinese")
+        prompt = ReferenceAudio(str(audio_path), item["transcript"], reference_language)
+        if reference_language.lower() == "chinese":
+            if feature_builder is None:
+                raise RuntimeError("中文参考音频必须提供 --roberta 以生成非零参考 BERT。")
+            _, ref_seq, ref_bert = feature_builder.prepare(
+                item["transcript"], leading_period=False
+            )
+        else:
+            ref_seq = prompt.phonemes_seq
+            ref_bert = prompt.text_bert
         audio_relative = f"references/{item['id']}.wav"
         audio_target = output / audio_relative
         audio_target.parent.mkdir(parents=True, exist_ok=True)
@@ -227,6 +256,7 @@ def build(args: argparse.Namespace) -> None:
             "title": item["title"],
             "text": PRESETS[0][2],
             "reference_text": item["transcript"],
+            "reference_language": reference_language,
             "reference_audio": audio_relative,
             "tensors": [
                 write_tensor(output, f"tensors/{item['id']}_ref_seq.tensor", "ref_seq", ref_seq),
@@ -236,43 +266,42 @@ def build(args: argparse.Namespace) -> None:
             ],
         })
 
-    presets = []
-    for preset_id, title, text in PRESETS:
-        _, sequence, bert = feature_builder.prepare(text, leading_period=True)
-        presets.append({
-            "id": preset_id,
-            "title": title,
-            "text": text,
-            "tensors": [
-                write_tensor(output, f"tensors/presets/{preset_id}_text_seq.tensor", "text_seq", sequence),
-                write_tensor(output, f"tensors/presets/{preset_id}_text_bert.tensor", "text_bert", bert),
-            ],
-            "bert_nonzero": int(np.count_nonzero(bert)),
-            "bert_elements": int(bert.size),
-        })
-
-    models = copy_models(args.converted_model_dir.resolve(), output)
-    roberta = args.roberta.resolve()
-    frontend = {
-        "roberta": "frontend/chinese_roberta_int8.onnx",
-        "vocab": "frontend/bert_vocab.tsv",
-        "char_phones": "frontend/char_phones.tsv",
-        "phrase_phones": "frontend/phrase_phones.tsv",
-        "punctuation_ids": "frontend/punctuation_ids.tsv",
-        "max_phrase_chars": 9,
-        "bert_dim": 1024,
-        "quantization": "dynamic-int8-per-channel",
-        "roberta_bytes": roberta.stat().st_size,
-        "roberta_sha256": sha256(roberta),
-        "roberta_external": True,
-    }
-    manifest = {
-        "version": args.version,
-        "character": args.character,
-        "sample_rate": 32000,
-        "models": models,
-        "shared_tensors": [],
-        "feature_modes": [{
+    if args.preset_source is not None:
+        presets, frontend, feature_modes = copy_seed_presets(
+            args.preset_source.resolve(), output
+        )
+    else:
+        if feature_builder is None:
+            raise RuntimeError("必须提供 --roberta，或用 --preset-source 复用已验证预设。")
+        presets = []
+        for preset_id, title, text in PRESETS:
+            _, sequence, bert = feature_builder.prepare(text, leading_period=True)
+            presets.append({
+                "id": preset_id,
+                "title": title,
+                "text": text,
+                "tensors": [
+                    write_tensor(output, f"tensors/presets/{preset_id}_text_seq.tensor", "text_seq", sequence),
+                    write_tensor(output, f"tensors/presets/{preset_id}_text_bert.tensor", "text_bert", bert),
+                ],
+                "bert_nonzero": int(np.count_nonzero(bert)),
+                "bert_elements": int(bert.size),
+            })
+        roberta = args.roberta.resolve()
+        frontend = {
+            "roberta": "frontend/chinese_roberta_int8.onnx",
+            "vocab": "frontend/bert_vocab.tsv",
+            "char_phones": "frontend/char_phones.tsv",
+            "phrase_phones": "frontend/phrase_phones.tsv",
+            "punctuation_ids": "frontend/punctuation_ids.tsv",
+            "max_phrase_chars": 9,
+            "bert_dim": 1024,
+            "quantization": "dynamic-int8-per-channel",
+            "roberta_bytes": roberta.stat().st_size,
+            "roberta_sha256": sha256(roberta),
+            "roberta_external": True,
+        }
+        feature_modes = [{
             "id": "mobile_int8",
             "title": "完整 Chinese RoBERTa",
             "description": "预设与自由输入均使用本地 INT8 Chinese RoBERTa 非零特征。",
@@ -280,7 +309,16 @@ def build(args: argparse.Namespace) -> None:
             "bert_nonzero": presets[0]["bert_nonzero"],
             "bert_elements": presets[0]["bert_elements"],
             "tone_diagnostic": "手机端同构中文 G2P 与 INT8 RoBERTa",
-        }],
+        }]
+
+    models = copy_models(args.converted_model_dir.resolve(), output)
+    manifest = {
+        "version": args.version,
+        "character": args.character,
+        "sample_rate": 32000,
+        "models": models,
+        "shared_tensors": [],
+        "feature_modes": feature_modes,
         "preset_feature_title": "完整 Chinese RoBERTa",
         "preset_feature_description": "预计算 INT8；非零中文特征",
         "presets": presets,
@@ -308,7 +346,12 @@ def main() -> None:
     parser.add_argument("--references-dir", type=Path, required=True)
     parser.add_argument("--references-json", type=Path, required=True)
     parser.add_argument("--shared-frontend", type=Path, required=True)
-    parser.add_argument("--roberta", type=Path, required=True)
+    parser.add_argument("--roberta", type=Path)
+    parser.add_argument(
+        "--preset-source",
+        type=Path,
+        help="已验证资源根目录；复用其中的中文预设张量和 RoBERTa 元数据。",
+    )
     parser.add_argument("--character", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--output", type=Path, required=True)
