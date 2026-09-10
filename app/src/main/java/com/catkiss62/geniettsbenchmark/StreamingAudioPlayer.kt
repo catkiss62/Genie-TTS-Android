@@ -31,6 +31,7 @@ class StreamingAudioPlayer(
     private val tuning: PlaybackTuning = PlaybackTuning.NEUTRAL,
 ) : AutoCloseable {
     private val appContext = context.applicationContext
+    private val highFrequencySoftener = tuning.createHighFrequencySoftener(sampleRate)
     private sealed interface Command {
         data class Audio(val samples: FloatArray) : Command
         data object Finish : Command
@@ -189,11 +190,12 @@ class StreamingAudioPlayer(
     }
 
     private fun toPcm(audio: FloatArray): ShortArray {
+        val processed = highFrequencySoftener?.process(audio) ?: audio
         val requestedGain = 10.0.pow(gainDb / 20.0)
-        val peak = audio.maxOfOrNull { abs(it).toDouble() } ?: 0.0
+        val peak = processed.maxOfOrNull { abs(it).toDouble() } ?: 0.0
         val safeGain = if (peak > 0.0) min(requestedGain, 0.98 / peak) else requestedGain
-        return ShortArray(audio.size) { index ->
-            (audio[index].toDouble().times(safeGain).coerceIn(-1.0, 1.0) * Short.MAX_VALUE)
+        return ShortArray(processed.size) { index ->
+            (processed[index].toDouble().times(safeGain).coerceIn(-1.0, 1.0) * Short.MAX_VALUE)
                 .toInt().toShort()
         }
     }

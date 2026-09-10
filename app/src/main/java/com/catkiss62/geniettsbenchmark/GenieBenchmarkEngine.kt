@@ -418,11 +418,12 @@ class GenieBenchmarkEngine(
         gainDb: Double = 0.0,
         tuning: PlaybackTuning = PlaybackTuning.NEUTRAL,
     ): Boolean {
+        val processed = tuning.createHighFrequencySoftener(sampleRate)?.process(audio) ?: audio
         val requestedGain = 10.0.pow(gainDb / 20.0)
-        val peak = audio.maxOfOrNull { abs(it).toDouble() } ?: 0.0
+        val peak = processed.maxOfOrNull { abs(it).toDouble() } ?: 0.0
         val safeGain = if (peak > 0.0) min(requestedGain, 0.98 / peak) else requestedGain
-        val pcm = ShortArray(audio.size) {
-            (audio[it].toDouble().times(safeGain).coerceIn(-1.0, 1.0) * Short.MAX_VALUE).toInt().toShort()
+        val pcm = ShortArray(processed.size) {
+            (processed[it].toDouble().times(safeGain).coerceIn(-1.0, 1.0) * Short.MAX_VALUE).toInt().toShort()
         }
         return playPcm(pcm, sampleRate, tuning)
     }

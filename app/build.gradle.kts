@@ -17,8 +17,8 @@ android {
         applicationId = "com.catkiss62.geniettsaudition"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "0.7.4"
+        versionCode = 21
+        versionName = "0.7.5"
         ndk { abiFilters += "arm64-v8a" }
         if (!skipNativeBuild) {
             externalNativeBuild {
