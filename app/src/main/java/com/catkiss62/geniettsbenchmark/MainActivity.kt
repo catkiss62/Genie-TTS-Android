@@ -632,7 +632,7 @@ class MainActivity : Activity() {
         val playbackStarted = engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
         postStatus(
             lastResultReport +
-                "\n请重点判断：是否像目标语言、音色是否仍像恬豆、发音和停顿是否自然。\n" +
+                "\n请重点判断：是否像目标语言、角色音色是否保持、发音和停顿是否自然。\n" +
                 if (playbackStarted) "已开始播放；可点击“复制上次合成报告”发给我。" else mutedPlaybackMessage()
         )
         }
