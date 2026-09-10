@@ -4,6 +4,17 @@
 
 开发结论、测试数据、私有资源说明和后续接入清单集中记录在 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。准备移植到 AI 伴侣时直接阅读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。
 
+## v0.7.1：流式拼段与双 V2 音色包试听
+
+- 首个自然单元继续立即提交；首段推理期间已经积压的后续短句，在不超过中文/日文 54 字、英文 110 字的前提下拼到目标长度。拼合只消费已经到达的文字，不等待未来网络 delta。
+- 固定长文本和恬豆 LLM 真流式统一使用一个 `MODE_STREAM` AudioTrack 连续写入 PCM，没有固定 200 ms 段间等待；播放器消费前段时，单一推理 worker 生成后段。
+- APK 暂时同时内置恬豆与奶油两套独立 Genie V2 模型。切换语音包会卸载上一套会话，避免两套大模型同时驻留内存。
+- 奶油包保留“动态、问候、涨粉、狗狗、今天我们来学”5 条参考候选；本轮只开放中文短句、自由输入与约 500 字分段试听，不接 DeepSeek 真流式和英日测试。
+- `今天我们来学.MP3` 只按现有 Android Genie 参考流程转为 32 kHz 单声道 WAV；压缩包中的 GPT-SoVITS 操作 PDF 不参与构建。
+- 奶油权重属于早期 322 音素、2048 点频谱的 GPT-SoVITS V2。Genie 2.0.2 原转换器会遗留新版模板的 3 处尺寸；资源脚本会依据实际外部权重修复 ONNX 元数据和频谱 Slice，并立即创建四个 ORT 会话做加载校验。本次打包还额外完成了实际 Encoder→Decoder→VITS 整链推理。该修复不重排原有中英日音素 ID，也不改变模型权重或采样参数。
+
+公开仓库仍不包含任一角色权重、参考录音或转换后的 ONNX。`tools/prepare_mobile_v2_voice_assets.py` 只提供可审计的私有资源制作流程。
+
 ## v0.7.0：DeepSeek / 模拟 LLM 真流式联调
 
 本版保留 v0.6.4 的模型、三语前端、CPU 8 线程、采样参数和全部原测试，在外围增加真实对话流水线验证：

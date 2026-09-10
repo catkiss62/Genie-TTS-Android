@@ -114,8 +114,8 @@ def build(args: argparse.Namespace) -> None:
 
     models = copy_models(args.converted_model_dir.resolve(), output)
     manifest = {
-        "version": "genie-tts-v2.0.2-tiandou-v2-audition-v0.3.0",
-        "character": "tiandou",
+        "version": args.bundle_version,
+        "character": args.character,
         "sample_rate": 32000,
         "models": models,
         "shared_tensors": shared,
@@ -141,6 +141,11 @@ def main() -> None:
     parser.add_argument("--references-dir", type=Path, required=True)
     parser.add_argument("--references-json", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("app/src/main/assets/benchmark"))
+    parser.add_argument(
+        "--bundle-version",
+        default="genie-tts-v2.0.2-tiandou-v2-audition-v0.3.0",
+    )
+    parser.add_argument("--character", default="tiandou")
     build(parser.parse_args())
 
 

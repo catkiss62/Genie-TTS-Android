@@ -25,6 +25,7 @@ import android.widget.TextView
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CancellationException
@@ -107,6 +108,7 @@ class MainActivity : Activity() {
             val text: String,
             val closedAfterStartMs: Long,
             val textQueueDepth: Int,
+            val sourceUnitCount: Int = 1,
         ) : DialogueEvent
 
         data class Complete(
@@ -125,6 +127,7 @@ class MainActivity : Activity() {
         val textQueueDepth: Int,
         val audioReadyAfterStartMs: Long,
         val bufferMarginMs: Long?,
+        val sourceUnitCount: Int,
         val result: BenchmarkResult,
     )
 
@@ -135,6 +138,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
     private lateinit var buttons: LinearLayout
+    private lateinit var voicePackageSelector: Spinner
     private lateinit var selector: Spinner
     private lateinit var runtimePresetSelector: Spinner
     private lateinit var freeInput: EditText
@@ -148,6 +152,7 @@ class MainActivity : Activity() {
     private lateinit var pageScroll: ScrollView
     private val worker = Executors.newSingleThreadExecutor()
     private val config = EngineConfig(BackendMode.CPU, 8)
+    private var currentVoicePackage = VoicePackageCatalog.all.first()
     private var preparedRoot: File? = null
     private var selectedPreset: TextPreset? = null
     private var lastResult: BenchmarkResult? = null
@@ -168,7 +173,11 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        engine = GenieBenchmarkEngine(this)
+        engine = GenieBenchmarkEngine(
+            this,
+            currentVoicePackage.assetNamespace,
+            currentVoicePackage.id,
+        )
         frontend = ChineseFrontend(engine)
         apiKeyStore = SecureApiKeyStore(this)
         setContentView(buildUi())
@@ -182,19 +191,26 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         content.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n恬豆 V2 Android 流式联调 v0.7.0"
+            text = "Genie-TTS v2.0.2\n双音色 Android 连续流式联调 v0.7.1"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         content.addView(TextView(this).apply {
-            text = "四种移植音色 + 一种测试备选 · 三语隔离 · CPU 8线程"
+            text = "恬豆 + 奶油两套 V2 模型 · 单 AudioTrack · CPU 8线程"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
         })
         content.addView(TextView(this).apply {
-            text = "选择测试音色（正式移植仅前四项）"
+            text = "选择语音包"
+            textSize = 13f
+            setTextColor(Color.DKGRAY)
+        })
+        voicePackageSelector = Spinner(this)
+        content.addView(voicePackageSelector, LinearLayout.LayoutParams(-1, dp(48)))
+        content.addView(TextView(this).apply {
+            text = "选择参考音频"
             textSize = 13f
             setTextColor(Color.DKGRAY)
         })
@@ -433,6 +449,20 @@ class MainActivity : Activity() {
                 cancelAppliedNs = System.nanoTime()
                 updateStatus("已请求停止；当前 ONNX 算子结束后会退出。")
             }.apply { isEnabled = false }
+            voicePackageSelector.adapter = ArrayAdapter(
+                this,
+                android.R.layout.simple_spinner_dropdown_item,
+                VoicePackageCatalog.all.map { it.title },
+            )
+            voicePackageSelector.setSelection(VoicePackageCatalog.all.indexOf(currentVoicePackage), false)
+            voicePackageSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    val selected = VoicePackageCatalog.all[position.coerceIn(VoicePackageCatalog.all.indices)]
+                    if (selected != currentVoicePackage) switchVoicePackage(selected)
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
             showCurrent()
         } catch (error: Throwable) {
             status.text = "测试资源未正确打入 APK。\n\n${error.stackTraceToString()}"
@@ -447,9 +477,9 @@ class MainActivity : Activity() {
                     text = preset.title
                     isAllCaps = false
                     setOnClickListener {
-                        selectedPreset = preset
+                        selectedPreset = engine.readManifest().presets.first { it.id == preset.id }
                         freeInput.isEnabled = false
-                        showCurrent("已选择“${preset.title}”。")
+                        showCurrent("已选择“${selectedPreset!!.title}”。")
                     }
                 }, LinearLayout.LayoutParams(0, dp(44), 1f))
             }
@@ -474,6 +504,35 @@ class MainActivity : Activity() {
         return cases[selector.selectedItemPosition.coerceIn(cases.indices)]
     }
 
+    private fun switchVoicePackage(selected: VoicePackageSpec) {
+        engine.stopPlayback()
+        frontend.close()
+        japaneseFrontend?.close()
+        englishFrontend = null
+        japaneseFrontend = null
+        engine.close()
+        currentVoicePackage = selected
+        engine = GenieBenchmarkEngine(this, selected.assetNamespace, selected.id)
+        frontend = ChineseFrontend(engine)
+        preparedRoot = null
+        selectedPreset = engine.readManifest().presets.first()
+        selector.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            engine.readManifest().cases.map { it.displayTitle },
+        )
+        selector.setSelection(0, false)
+        lastResult = null
+        lastResultLabel = null
+        lastResultReport = ""
+        longStreamReport = ""
+        longStreamReportLabel = "无"
+        dialogueReport = ""
+        dialogueReportLabel = "无"
+        freeInput.isEnabled = false
+        showCurrent("已切换语音包；模型会在首次生成时按需加载。")
+    }
+
     private fun selectedTextTitle() = selectedPreset?.title ?: "自由输入"
     private fun selectedText() = selectedPreset?.text ?: freeInput.text.toString()
     private fun selectedRuntimePreset(): RuntimeLanguagePreset =
@@ -485,6 +544,7 @@ class MainActivity : Activity() {
         status.text = buildString {
             val runtimePreset = selectedRuntimePreset()
             appendLine(deviceLine())
+            appendLine("当前语音包：${currentVoicePackage.title}")
             val voiceProfile = VoiceProfileCatalog.resolve(item.id)
             appendLine("当前音色：${item.displayTitle}")
             voiceProfile?.let {
@@ -535,7 +595,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun runLanguageTest(test: FixedLanguageTest) = runTask(test.title) {
+    private fun runLanguageTest(test: FixedLanguageTest) {
+        if (!currentVoicePackage.supportsMultilingual) {
+            return showCurrent("奶油包本轮只验证中文参考音频与中文分段播放；英日测试保留给恬豆。")
+        }
+        runTask(test.title) {
         val started = System.nanoTime()
         val root = ensureAssets()
         val item = currentCase()
@@ -571,9 +635,14 @@ class MainActivity : Activity() {
                 "\n请重点判断：是否像目标语言、音色是否仍像恬豆、发音和停顿是否自然。\n" +
                 if (playbackStarted) "已开始播放；可点击“复制上次合成报告”发给我。" else mutedPlaybackMessage()
         )
+        }
     }
 
-    private fun runRuntimePreset() = runTask("动态三语前端") {
+    private fun runRuntimePreset() {
+        if (!currentVoicePackage.supportsMultilingual) {
+            return showCurrent("动态三语前端暂不用于奶油包；请切回恬豆测试。")
+        }
+        runTask("动态三语前端") {
         val started = System.nanoTime()
         val root = ensureAssets()
         val item = currentCase()
@@ -628,6 +697,7 @@ class MainActivity : Activity() {
                 "\n${mutedPlaybackMessage()}"
             }
         )
+        }
     }
 
     private fun goldenPhoneDiagnostic(actual: LongArray, expected: LongArray?): String {
@@ -641,7 +711,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun runLongStreamTest(test: LongStreamTest) = runTask("${test.language.title}长文本试听") {
+    private fun runLongStreamTest(test: LongStreamTest) {
+        if (test.language != LongStreamLanguage.CHINESE && !currentVoicePackage.supportsMultilingual) {
+            return showCurrent("奶油包本轮只加入中文约 500 字分段试听；英日长文本请切回恬豆。")
+        }
+        runTask("${test.language.title}长文本试听") {
         check(!SystemAudioPolicy.isSilentOrVibrate(this)) {
             "手机处于静音或振动模式，长文本 TTS 播放已阻止"
         }
@@ -740,11 +814,11 @@ class MainActivity : Activity() {
             val thermalAtEnd = thermalStatus()
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.7.0 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.1 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.displayTitle} · ${config.label}")
                 appendLine("语言：${test.language.title} · 原文：${test.text.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
-                appendLine("策略：恢复 v0.5.0 路径；首段固定预填充 1000 ms；播放期间按顺序生成后续段；采样参数未修改。")
+                appendLine("策略：首段固定预填充 1000 ms；单 AudioTrack 连续 PCM、无固定段间等待；播放前段时按顺序生成后段；采样参数未修改。")
                 appendLine("温控状态：开始 $thermalAtStart · 结束 $thermalAtEnd")
                 appendLine("首段开播等待：$firstAudioWaitMs ms")
                 appendLine("全部分段生成完成：$generationWallMs ms")
@@ -773,6 +847,7 @@ class MainActivity : Activity() {
             if (cancelRequested) player?.cancel()
             player?.close()
         }
+        }
     }
 
     private fun saveDeepSeekKey() {
@@ -799,11 +874,14 @@ class MainActivity : Activity() {
     private fun copyDialogueReport() {
         if (dialogueReport.isBlank()) return showCurrent("请先完成或中断一次流式联调测试。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.7.0", dialogueReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.7.1", dialogueReport))
         showCurrent("上一次流式联调报告已复制：$dialogueReportLabel")
     }
 
     private fun runDialogueStream(source: DialogueStreamSource) {
+        if (!currentVoicePackage.supportsDialogueStreaming) {
+            return showCurrent("DeepSeek / 模拟真流式本轮只用于恬豆；奶油仅做已确认的中文分段播放测试。")
+        }
         val language = DialogueLanguage.entries[
             dialogueLanguageSelector.selectedItemPosition.coerceIn(DialogueLanguage.entries.indices)
         ]
@@ -952,6 +1030,7 @@ class MainActivity : Activity() {
         }
 
         val runs = ArrayList<DialogueSegmentRun>()
+        val deferredEvents = ArrayDeque<DialogueEvent>()
         var player: StreamingAudioPlayer? = null
         var playbackStartedNs = 0L
         var queuedAudioMs = 0L
@@ -960,28 +1039,66 @@ class MainActivity : Activity() {
         var modelReadyAfterStartMs = 0L
         var inFlight = false
         val thermalAtStart = thermalStatus()
+
+        fun nextEvent(): DialogueEvent? = if (deferredEvents.isNotEmpty()) {
+            deferredEvents.removeFirst()
+        } else {
+            events.poll(250L, TimeUnit.MILLISECONDS)
+        }
+
+        fun coalesceQueuedUnits(first: DialogueEvent.Segment): DialogueEvent.Segment {
+            if (runs.isEmpty()) return first
+            val available = arrayListOf(first)
+            while (true) {
+                val next = if (deferredEvents.isNotEmpty()) deferredEvents.removeFirst() else events.poll()
+                when (next) {
+                    is DialogueEvent.Segment -> available += next
+                    null -> break
+                    else -> {
+                        deferredEvents.addFirst(next)
+                        break
+                    }
+                }
+            }
+            val packed = DialogueSegmentPacker.packPrefix(available.map { it.text }, language)
+            for (index in available.lastIndex downTo packed.sourceUnits) {
+                deferredEvents.addFirst(available[index])
+            }
+            val used = available.take(packed.sourceUnits)
+            return first.copy(
+                index = runs.size + 1,
+                text = packed.text,
+                closedAfterStartMs = used.maxOf { it.closedAfterStartMs },
+                textQueueDepth = used.maxOf { it.textQueueDepth },
+                sourceUnitCount = used.sumOf { it.sourceUnitCount },
+            )
+        }
+
         try {
             val initialModelLoad = engine.loadModels(root, config)
             modelReadyAfterStartMs = (System.nanoTime() - testStartedNs) / 1_000_000L
             while (sourceComplete == null) {
                 checkCancelled()
-                val event = events.poll(250L, TimeUnit.MILLISECONDS)
+                val event = nextEvent()
                 if (event == null) {
-                    if (!producer.isAlive && events.isEmpty()) error("文字流意外结束，未收到完成事件")
+                    if (!producer.isAlive && events.isEmpty() && deferredEvents.isEmpty()) {
+                        error("文字流意外结束，未收到完成事件")
+                    }
                     continue
                 }
                 when (event) {
                     is DialogueEvent.Failure -> throw event.error
                     is DialogueEvent.Complete -> sourceComplete = event
                     is DialogueEvent.Segment -> {
+                        val packedEvent = coalesceQueuedUnits(event)
                         inFlight = true
                         postStatus(
                             "${source.title} · ${lengthMode.title}\n" +
-                                "收到第 ${event.index} 段，正在进行${language.title}前处理与 TTS……\n" +
+                                "收到第 ${runs.size + 1} 个 TTS 段（拼合 ${packedEvent.sourceUnitCount} 个自然单元），正在进行${language.title}前处理与 TTS……\n" +
                                 "文本队列：${events.count { it is DialogueEvent.Segment }} 段"
                         )
                         val segmentStartedNs = System.nanoTime()
-                        val prepared = prepareDialogueSegment(root, language, event.text)
+                        val prepared = prepareDialogueSegment(root, language, packedEvent.text)
                         val modelLoad = if (runs.isEmpty()) initialModelLoad else engine.loadModels(root, config)
                         val result = engine.runPrepared(
                             root = root,
@@ -989,7 +1106,7 @@ class MainActivity : Activity() {
                             prepared = prepared,
                             modelLoad = modelLoad,
                             requestStartedNs = segmentStartedNs,
-                            targetTitle = "${lengthMode.title}第 ${event.index} 段",
+                            targetTitle = "${lengthMode.title}第 ${runs.size + 1} 段",
                             featureModeTitle = dialogueFeatureTitle(language),
                             featureDescription = dialogueFeatureDescription(language),
                             shouldCancel = { cancelRequested },
@@ -1008,12 +1125,13 @@ class MainActivity : Activity() {
                         }
                         queuedAudioMs += (result.audioSeconds * 1000.0).toLong()
                         runs += DialogueSegmentRun(
-                            index = event.index,
-                            text = event.text,
-                            closedAfterStartMs = event.closedAfterStartMs,
-                            textQueueDepth = event.textQueueDepth,
+                            index = runs.size + 1,
+                            text = packedEvent.text,
+                            closedAfterStartMs = packedEvent.closedAfterStartMs,
+                            textQueueDepth = packedEvent.textQueueDepth,
                             audioReadyAfterStartMs = (readyNs - testStartedNs) / 1_000_000L,
                             bufferMarginMs = margin,
+                            sourceUnitCount = packedEvent.sourceUnitCount,
                             result = result.copy(audio = FloatArray(0)),
                         )
                         generationFinishedNs = readyNs
@@ -1042,14 +1160,15 @@ class MainActivity : Activity() {
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
 
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.7.0 流式对话联调报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.1 流式对话联调报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
                 appendLine("音色：${item.displayTitle} · ${config.label}")
                 if (source == DialogueStreamSource.DEEPSEEK) appendLine("DeepSeek 模型：$model · 思考模式：关闭")
                 appendLine("测试输入：$userPrompt")
-                appendLine("输出：${sourceComplete!!.fullText.length} 字符 · ${runs.size} 段 · 单段最长 ${runs.maxOf { it.text.length }} 字符")
-                appendLine("切句：首段目标 ${language.firstTargetChars} · 后续目标 ${language.targetChars} · 硬上限 ${language.maxChars} 字符")
+                appendLine("输出：${sourceComplete!!.fullText.length} 字符 · ${runs.sumOf { it.sourceUnitCount }} 个自然单元 → ${runs.size} 个 TTS 段 · 单段最长 ${runs.maxOf { it.text.length }} 字符")
+                appendLine("切句：首段即时提交；后续仅拼合已积压文本，目标 ${language.targetChars} · 硬上限 ${language.maxChars} 字符")
+                appendLine("播放：单 AudioTrack 连续 PCM；无固定段间等待；播放前段时生成后段")
                 appendLine("温控状态：开始 $thermalAtStart · 结束 $thermalAtEnd")
                 appendLine("首个文字块：${firstDeltaAfterMs?.let { "$it ms" } ?: "无"}")
                 appendLine("第一段文字闭合：${firstClosedAfterMs?.let { "$it ms" } ?: "无"}")
@@ -1069,7 +1188,7 @@ class MainActivity : Activity() {
                 runs.forEach { run ->
                     appendLine("\n--- 第 ${run.index}/${runs.size} 段 ---")
                     appendLine("文本：${run.text}")
-                    appendLine("文字闭合：点击后 ${run.closedAfterStartMs} ms · 提交时文本队列 ${run.textQueueDepth} 段")
+                    appendLine("拼合：${run.sourceUnitCount} 个自然单元 · 最后单元闭合：点击后 ${run.closedAfterStartMs} ms · 提交时文本队列 ${run.textQueueDepth} 段")
                     appendLine("音频完成：点击后 ${run.audioReadyAfterStartMs} ms · 播放前缓冲余量：${run.bufferMarginMs?.let { "$it ms" } ?: "首段"}")
                     appendLine("前处理：${run.result.frontendMs} ms · 核心：${run.result.totalInferenceMs} ms · 音频：${"%.2f".format(run.result.audioSeconds)} s")
                     appendLine("RTF：${"%.3f".format(run.result.coreRtf)} · Decoder：${run.result.decoderIterations} 次 · PSS：约 ${run.result.pssMb} MB")
@@ -1080,13 +1199,14 @@ class MainActivity : Activity() {
             dialogueReportLabel = "${source.title} · ${lengthMode.title} · ${language.title} · RTF ${"%.3f".format(aggregateRtf)}"
             postStatus("流式联调完成。请先判断听感和停顿；异常时复制上一次流式联调报告。")
         } catch (cancelled: CancellationException) {
-            val queuedSegments = events.count { it is DialogueEvent.Segment }
+            val queuedSegments = events.count { it is DialogueEvent.Segment } +
+                deferredEvents.count { it is DialogueEvent.Segment }
             val abandoned = queuedSegments + if (inFlight) 1 else 0
             val stoppedAfterMs = if (cancelRequestedNs > 0L && cancelAppliedNs >= cancelRequestedNs) {
                 (cancelAppliedNs - cancelRequestedNs) / 1_000_000L
             } else null
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.7.0 流式对话中断报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.1 流式对话中断报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
                 appendLine("结果：用户主动中断")
@@ -1155,7 +1275,7 @@ class MainActivity : Activity() {
 
     private fun runDiagnostic() = runTask("自动诊断") {
         val manifest = engine.readManifest()
-        val primary = manifest.cases.first { it.id == "ref01" }
+        val primary = manifest.cases.first()
         val neutral = manifest.presets.first { it.id == "neutral" }
         val presetOrder = listOf(
             neutral,
@@ -1204,9 +1324,9 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.7.0 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.7.1 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
-            appendLine("固定音色：日常认真（主音色）")
+            appendLine("固定音色：${primary.displayTitle} · ${currentVoicePackage.title}")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
             if (!canRunDynamic) appendLine("自由输入：未导入 RoBERTa，因此本次跳过。")
             results.forEach { (label, result) ->
@@ -1267,21 +1387,21 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.7.0", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.7.1", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.7.0", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.7.1", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次中文、英文或日文长文本试听。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.7.0", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.7.1", longStreamReport))
         showCurrent("上一次长文本报告已复制：$longStreamReportLabel")
     }
 
@@ -1344,6 +1464,7 @@ class MainActivity : Activity() {
         progress.visibility = if (value) View.VISIBLE else View.GONE
         if (value) progress.isIndeterminate = true
         selector.isEnabled = !value
+        voicePackageSelector.isEnabled = !value
         runtimePresetSelector.isEnabled = !value
         if (::dialogueLanguageSelector.isInitialized) dialogueLanguageSelector.isEnabled = !value
         if (::dialogueLengthSelector.isInitialized) dialogueLengthSelector.isEnabled = !value

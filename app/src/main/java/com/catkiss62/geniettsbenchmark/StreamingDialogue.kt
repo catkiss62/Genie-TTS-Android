@@ -38,6 +38,40 @@ data class ClosedDialogueSegment(
     val receivedChars: Int,
 )
 
+data class PackedDialogueSegment(
+    val text: String,
+    val sourceUnits: Int,
+)
+
+/**
+ * Packs only the natural units that are already waiting in the text queue. The first unit is
+ * still synthesized immediately; after that, text accumulated while TTS was busy is combined
+ * toward the normal target length. There is no timer and therefore no artificial network wait.
+ */
+object DialogueSegmentPacker {
+    fun packPrefix(available: List<String>, language: DialogueLanguage): PackedDialogueSegment {
+        require(available.isNotEmpty()) { "没有可拼合的流式文本" }
+        val packed = StringBuilder(available.first().trim())
+        var used = 1
+        while (used < available.size && packed.length < language.targetChars) {
+            val next = available[used].trim()
+            if (next.isEmpty()) {
+                used += 1
+                continue
+            }
+            val separator = if (
+                language == DialogueLanguage.ENGLISH &&
+                packed.lastOrNull()?.isWhitespace() != true &&
+                next.firstOrNull()?.isWhitespace() != true
+            ) " " else ""
+            if (packed.length + separator.length + next.length > language.maxChars) break
+            packed.append(separator).append(next)
+            used += 1
+        }
+        return PackedDialogueSegment(packed.toString(), used)
+    }
+}
+
 /**
  * Incremental hard-bounded splitter. Unlike the MoeChat reference it never needs a following
  * network delta to release punctuation and never lets an unpunctuated sentence grow forever.

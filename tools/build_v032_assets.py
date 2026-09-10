@@ -171,6 +171,12 @@ def main() -> None:
     parser.add_argument("--genie-data", type=Path, required=True)
     parser.add_argument("--g2pm-dir", type=Path, required=True)
     parser.add_argument("--quantized-roberta", type=Path, required=True)
+    parser.add_argument("--keep-all-cases", action="store_true")
+    parser.add_argument("--no-gain-calibration", action="store_true")
+    parser.add_argument(
+        "--bundle-version",
+        default="genie-tts-v2.0.2-tiandou-v2-final-v0.3.3",
+    )
     args = parser.parse_args()
 
     root = args.assets.resolve()
@@ -202,16 +208,18 @@ def main() -> None:
 
     kept_cases = []
     for case in manifest["cases"]:
-        if case["id"] not in KEPT_CASE_IDS:
+        if not args.keep_all_cases and case["id"] not in KEPT_CASE_IDS:
             continue
         feature_tensors = case.get("feature_tensors", {})
         if "roberta_verified" in feature_tensors:
             case["tensors"] = case["tensors"] + feature_tensors["roberta_verified"]
         case.pop("feature_tensors", None)
-        case["playback_gain_db"] = 4.0 if case["id"] == "ref02" else 0.0
+        case["playback_gain_db"] = (
+            0.0 if args.no_gain_calibration else (4.0 if case["id"] == "ref02" else 0.0)
+        )
         kept_cases.append(case)
 
-    manifest["version"] = "genie-tts-v2.0.2-tiandou-v2-final-v0.3.3"
+    manifest["version"] = args.bundle_version
     manifest["cases"] = kept_cases
     manifest["presets"] = presets
     manifest["frontend"] = make_frontend_data(
