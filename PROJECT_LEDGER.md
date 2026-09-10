@@ -1,6 +1,6 @@
 # Genie-TTS Android 项目总账
 
-最后更新：2026-09-11 · 当前测试版：v0.7.5（小酒狐连续高频柔化） · 稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
+最后更新：2026-09-11 · 当前测试版：v0.7.6（小酒狐录屏参考三候选） · 稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
 
 ## 当前接班区
 
@@ -10,7 +10,18 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 
 正式移植请先读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。该文件是后续 AI 接手的最短入口；本总账继续保存完整历史、失败路线和真机依据。
 
-稳定开发分支为 `agent/v001-genie-benchmark`，v0.7.0 联调分支为 `agent/v070-streaming-dialogue`；v0.7.2 功能分支为 `agent/v072-lenai-trilingual`，v0.7.3 在其上修复恬豆私有权重完整性；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`；v0.7.5 高频柔化分支为 `agent/v075-jiuhu-high-frequency-softening`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+稳定开发分支为 `agent/v001-genie-benchmark`，v0.7.0 联调分支为 `agent/v070-streaming-dialogue`；v0.7.2 功能分支为 `agent/v072-lenai-trilingual`，v0.7.3 在其上修复恬豆私有权重完整性；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`；v0.7.5 高频柔化分支为 `agent/v075-jiuhu-high-frequency-softening`；v0.7.6 本地工作分支为 `agent/v076-jiuhu-video-candidates`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+
+### v0.7.6 小酒狐录屏参考三候选
+
+- 真机反馈：v0.7.5 高频柔化改善有限，因此不继续扩大后处理范围，改为比较同一角色在其他无背景音乐视频中的自然发声参考。
+- 新增三段视频参考并保留原候选，共四候选：`jiuhu_idle50`（原始模型参考）、`jiuhu_bento_tools`（「ちゃんとお弁当を持ちましたか？予備の道具も必要ですよ」）、`jiuhu_dream_days`（「ご主人様と過ごす日々は、まるで夢のようです」）、`jiuhu_devotion`（「この命、ご主人様のために捧げますね」）。日语逐句从用户提供的四张对照截图核对。
+- 源视频音轨均为 44.1 kHz 单声道、约 265 kbps AAC，无背景音乐，时长约 4.60、4.44、3.20 秒。解码后只施加 `+6.0/+10.6/+8.4 dB` 线性增益，使三条均约为原 `idle50.wav` 的 `-26.4 LUFS`；输出保持 44.1 kHz 单声道 16-bit PCM WAV，不做降噪、动态压缩、变调或额外有损编码。
+- MP3 只减小磁盘体积，不降低模型运算量；参考编码前仍要解码成 PCM，并会增加有损误差，因此继续使用 WAV。新增三条 WAV 约 0.28–0.41 MB，不构成 APK 体积或加载瓶颈。
+- 隔离：每条候选独立生成 Japanese OpenJTalk `ref_seq`、零 `ref_bert`、`ssl_content`、`ref_audio`、1024 维 `ge` 与 512 维 `ge_advanced`。四条仅共用同一对 GPT/SoVITS 权重；不得跨候选复制任何参考提示张量，也不得与恬豆资源目录混用。
+- 私有桌面门禁：四候选逐一完成 Encoder→自回归 Decoder→VITS，全都输出有限有效波形；本次固定中文目标分别生成约 3.40、3.44、4.72、3.60 秒音频。声学 ONNX 与 v0.7.5 最终酒狐包逐文件 SHA-256 相同，确认没有重新转换或串包。
+- 代码：新增 `tools/refresh_v2pro_references.py`，只从已验证基础包重建候选资源与 manifest；`tools/verify_voice_bundle.py` 从只测首候选改为遍历全部候选。酒狐原有语速、音调和高频柔化控制均保留，恬豆仍完全旁路。
+- 交付状态：等待完成公开源码检查、完整 APK 装配、签名与 APK 内资源复核；用户已授权把 v0.7.6 完整测试 APK 上传到既有未发布 GitHub 草稿页，不发布正式 Release。
 
 ### v0.7.5 小酒狐连续高频柔化
 
@@ -112,6 +123,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 | v0.7.3 | 修复 v0.7.2 恬豆 T2S 外部权重截断；新增逐资源完整性、原子释放和打包前完整 ONNX 推理门禁 |
 | v0.7.4 | 当前 APK 移除乐奈并加入小酒狐 V2Pro 单候选三语；离线生成双提示特征；酒狐专属独立语速/音调滑钮 |
 | v0.7.5 | 酒狐专属 `0～-10 dB` 连续高频柔化；4 kHz 高架滤波不改音高，流式分段间保持滤波状态；恬豆完全旁路 |
+| v0.7.6 | 保留原酒狐参考并新增三段录屏参考；逐候选独立生成 V2Pro 双提示张量，四候选全链推理门禁；WAV 线性匹配原参考响度 |
 
 ## 真机测试基线
 

@@ -2,8 +2,8 @@
 """Verify one private Android voice bundle before APK packaging.
 
 This intentionally does more than open the ZIP: it checks every declared resource,
-loads all four ONNX sessions with their external weights, and completes one
-Encoder -> autoregressive Decoder -> VITS inference.
+loads all four ONNX sessions with their external weights, and completes an
+Encoder -> autoregressive Decoder -> VITS inference for every reference candidate.
 """
 
 from __future__ import annotations
@@ -50,48 +50,48 @@ def verify(root: Path) -> None:
         if sha256(path) != expected["sha256"]:
             raise RuntimeError(f"{root}: SHA-256 错误 {relative}")
 
-    case = manifest["cases"][0]
     target = manifest.get("presets", [None])[0]
-    specs = [*manifest.get("shared_tensors", []), *case["tensors"]]
-    if target is not None:
-        specs.extend(target["tensors"])
-    tensors = {spec["name"]: read_tensor(root, spec) for spec in specs}
     models = manifest["models"]
     sessions = {
         name: ort.InferenceSession(str(root / relative), providers=["CPUExecutionProvider"])
         for name, relative in models.items()
     }
 
-    encoder_inputs = {name: tensors[name] for name in manifest["encoder_input_names"]}
-    x, prompts = sessions["encoder"].run(None, encoder_inputs)
-    y, y_emb, *cache = sessions["first_decoder"].run(None, {"x": x, "prompts": prompts})
-    for index in range(500):
-        y, y_emb, stop_condition, *cache = sessions["stage_decoder"].run(
-            None,
-            dict(zip(manifest["stage_input_names"], [y, y_emb, *cache])),
-        )
-        if bool(np.asarray(stop_condition).any()):
-            break
-    else:
-        raise RuntimeError(f"{root}: Decoder 500 步内未停止")
+    for case in manifest["cases"]:
+        specs = [*manifest.get("shared_tensors", []), *case["tensors"]]
+        if target is not None:
+            specs.extend(target["tensors"])
+        tensors = {spec["name"]: read_tensor(root, spec) for spec in specs}
+        encoder_inputs = {name: tensors[name] for name in manifest["encoder_input_names"]}
+        x, prompts = sessions["encoder"].run(None, encoder_inputs)
+        y, y_emb, *cache = sessions["first_decoder"].run(None, {"x": x, "prompts": prompts})
+        for index in range(500):
+            y, y_emb, stop_condition, *cache = sessions["stage_decoder"].run(
+                None,
+                dict(zip(manifest["stage_input_names"], [y, y_emb, *cache])),
+            )
+            if bool(np.asarray(stop_condition).any()):
+                break
+        else:
+            raise RuntimeError(f"{root}:{case['id']}: Decoder 500 步内未停止")
 
-    y[0, -1] = 0
-    requested = y.size if index == 0 else index
-    semantic = y.reshape(-1)[-max(1, min(requested, y.size)):]
-    invalid = np.flatnonzero(semantic >= 1024)
-    if invalid.size:
-        semantic = semantic[: max(1, int(invalid[0]))]
-    semantic = semantic.reshape(1, 1, -1)
-    audio = sessions["vocoder"].run(None, {
-        name: semantic if name == "pred_semantic" else tensors[name]
-        for name in manifest["vocoder_input_names"]
-    })[0]
-    if audio.size == 0 or not np.isfinite(audio).all():
-        raise RuntimeError(f"{root}: VITS 输出无效")
-    print(
-        f"{root.name}: PASS · {index + 1} decoder steps · "
-        f"{audio.size} samples · {audio.size / manifest['sample_rate']:.2f}s"
-    )
+        y[0, -1] = 0
+        requested = y.size if index == 0 else index
+        semantic = y.reshape(-1)[-max(1, min(requested, y.size)):]
+        invalid = np.flatnonzero(semantic >= 1024)
+        if invalid.size:
+            semantic = semantic[: max(1, int(invalid[0]))]
+        semantic = semantic.reshape(1, 1, -1)
+        audio = sessions["vocoder"].run(None, {
+            name: semantic if name == "pred_semantic" else tensors[name]
+            for name in manifest["vocoder_input_names"]
+        })[0]
+        if audio.size == 0 or not np.isfinite(audio).all():
+            raise RuntimeError(f"{root}:{case['id']}: VITS 输出无效")
+        print(
+            f"{root.name}:{case['id']}: PASS · {index + 1} decoder steps · "
+            f"{audio.size} samples · {audio.size / manifest['sample_rate']:.2f}s"
+        )
 
 
 def main() -> None:

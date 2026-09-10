@@ -4,6 +4,14 @@
 
 开发结论、测试数据、私有资源说明和后续接入清单集中记录在 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。准备移植到 AI 伴侣时直接阅读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。
 
+## v0.7.6：小酒狐录屏参考三候选
+
+- 在原始模型候选之外，加入三段无背景音乐的视频录音作为候选：便当与备用工具、梦一样的日子、奉献给主人；四条日语标注均按画面原文核对。
+- 视频源为 44.1 kHz 单声道 AAC。私有打包时只解码一次，使用线性增益匹配原始 `idle50.wav` 的约 `-26.4 LUFS`，输出 44.1 kHz 单声道 16-bit PCM WAV；不做降噪、变调、动态压缩或第二次有损编码。
+- 三段新增参考时长约 4.60、4.44、3.20 秒，均在 Genie 建议的 3–10 秒范围内。MP3 不会加快 TTS 推理，模型仍需解码到 PCM/特征，因此继续使用 WAV。
+- 每个候选独立生成 Japanese OpenJTalk 音素、`ssl_content`、`ref_audio`、1024 维 `ge` 和 512 维 `ge_advanced`，不复制原候选提示张量；四候选仍共用同一套小酒狐 GPT/SoVITS 权重。
+- `tools/refresh_v2pro_references.py` 用于从已验证 V2Pro 资源包安全替换候选；`tools/verify_voice_bundle.py` 现在会对每个候选分别完成 Encoder→Decoder→VITS 全链推理。
+
 ## v0.7.5：小酒狐连续高频柔化
 
 - 酒狐上下音域跨度较大，整体降低音调会先让低音过低，却不能消除高音的尖锐感。本版不修改参考音频和模型提示特征，而是在合成 PCM 上增加酒狐专属高架滤波。

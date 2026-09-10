@@ -30,6 +30,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
+      - name: Check private packaging helper syntax
+        run: python -m py_compile tools/*.py
       - name: Compile Android source without private model assets
         run: gradle --no-daemon :app:compileDebugKotlin
       - name: Run streaming segmenter unit tests

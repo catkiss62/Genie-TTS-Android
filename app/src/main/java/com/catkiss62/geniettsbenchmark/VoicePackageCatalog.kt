@@ -20,7 +20,7 @@ object VoicePackageCatalog {
         ),
         VoicePackageSpec(
             id = "jiuhu",
-            title = "小酒狐 V2Pro（单候选）",
+            title = "小酒狐 V2Pro（4 候选）",
             assetNamespace = "benchmark_jiuhu",
             supportsMultilingual = true,
             supportsDialogueStreaming = false,
