@@ -1,0 +1,528 @@
+package com.catkiss62.geniettsbenchmark
+
+import android.content.Context
+import android.net.Uri
+import android.media.AudioFormat
+import android.media.AudioTrack
+import android.os.Debug
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import ai.onnxruntime.TensorInfo
+import ai.onnxruntime.providers.NNAPIFlags
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
+import java.nio.LongBuffer
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+import java.util.EnumSet
+import java.util.concurrent.CancellationException
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.sqrt
+
+class GenieBenchmarkEngine(
+    private val context: Context,
+    private val assetNamespace: String = "benchmark",
+    private val storageNamespace: String = "tiandou",
+) : AutoCloseable {
+    private val env = OrtEnvironment.getEnvironment()
+    private var manifest: BenchmarkManifest? = null
+    private var encoder: OrtSession? = null
+    private var firstDecoder: OrtSession? = null
+    private var stageDecoder: OrtSession? = null
+    private var vocoder: OrtSession? = null
+    private var currentConfig: EngineConfig? = null
+    private var audioTrack: AudioTrack? = null
+
+    fun readManifest(): BenchmarkManifest {
+        manifest?.let { return it }
+        val text = context.assets.open("$assetNamespace/manifest.json").bufferedReader().use { it.readText() }
+        return BenchmarkManifest.parse(text).also { manifest = it }
+    }
+
+    fun prepareAssets(progress: (String) -> Unit): File {
+        val info = readManifest()
+        val root = if (storageNamespace == "tiandou") {
+            // Preserve the path used by v0.3.0–v0.7.0 so an overwrite install can reuse the
+            // already-extracted 370 MB model instead of copying it again.
+            File(context.filesDir, "genie-benchmark/${info.version}")
+        } else {
+            File(context.filesDir, "genie-benchmark/voices/$storageNamespace/${info.version}")
+        }
+        copyAssets(root, info.assetFiles.filterNot { it.startsWith("frontend/") }, progress)
+        return root
+    }
+
+    fun prepareFrontendAssets(root: File, progress: (String) -> Unit) {
+        val frontend = readManifest().frontend
+        copyAssets(root, listOf(
+            frontend.vocab, frontend.charPhones,
+            frontend.phrasePhones, frontend.punctuationIds
+        ), progress)
+    }
+
+    fun hasFrontendModel(root: File): Boolean {
+        return findFrontendModel(root) != null
+    }
+
+    fun frontendModelFile(root: File): File {
+        return findFrontendModel(root) ?: error("尚未导入配套的 RoBERTa 模型")
+    }
+
+    private fun findFrontendModel(root: File): File? {
+        val frontend = readManifest().frontend
+        val shared = File(context.filesDir, "genie-benchmark/shared/${File(frontend.roberta).name}")
+        val base = File(context.filesDir, "genie-benchmark")
+        val candidates = linkedSetOf(shared, File(root, frontend.roberta))
+        base.listFiles()?.filter { it.isDirectory && it != root }?.forEach {
+            candidates += File(it, frontend.roberta)
+        }
+        return candidates.firstOrNull { model ->
+            val marker = File(model.parentFile, model.name + ".sha256")
+            model.isFile && model.length() == frontend.robertaBytes && marker.isFile &&
+                marker.readText().trim().equals(frontend.robertaSha256, ignoreCase = true)
+        }
+    }
+
+    fun importFrontendModel(root: File, uri: Uri, progress: (String) -> Unit) {
+        val frontend = readManifest().frontend
+        val target = File(context.filesDir, "genie-benchmark/shared/${File(frontend.roberta).name}")
+        val incoming = File(target.parentFile, target.name + ".incoming")
+        target.parentFile?.mkdirs()
+        incoming.delete()
+        val digest = MessageDigest.getInstance("SHA-256")
+        var copied = 0L
+        try {
+            val input = context.contentResolver.openInputStream(uri) ?: error("无法读取所选模型文件")
+            input.buffered().use { source ->
+                incoming.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(1024 * 1024)
+                    while (true) {
+                        val count = source.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        digest.update(buffer, 0, count)
+                        copied += count
+                        if (copied % (32L * 1024L * 1024L) < count) {
+                            progress("正在导入 RoBERTa：${copied / 1024L / 1024L} MB")
+                        }
+                    }
+                }
+            }
+            val sha = digest.digest().joinToString("") { "%02x".format(it) }
+            check(copied == frontend.robertaBytes) { "模型大小不匹配：$copied / ${frontend.robertaBytes}" }
+            check(sha.equals(frontend.robertaSha256, ignoreCase = true)) { "模型 SHA-256 不匹配，请选择配套的 v0.3.2 文件" }
+            target.delete()
+            check(incoming.renameTo(target)) { "无法保存 RoBERTa 模型" }
+            File(target.parentFile, target.name + ".sha256").writeText(sha)
+        } catch (error: Throwable) {
+            incoming.delete()
+            throw error
+        }
+    }
+
+    private fun copyAssets(root: File, files: List<String>, progress: (String) -> Unit) {
+        val integrity = readManifest().assetIntegrity
+        files.forEachIndexed { index, relative ->
+            val output = File(root, relative)
+            val expected = integrity[relative]
+            val marker = File(output.parentFile, output.name + ".sha256")
+            val validLength = output.isFile && output.length() > 0L &&
+                (expected == null || output.length() == expected.bytes)
+            val validMarker = expected == null ||
+                (marker.isFile && marker.readText().trim().equals(expected.sha256, ignoreCase = true))
+            if (validLength && validMarker) return@forEachIndexed
+
+            // Older builds did not leave a digest marker. Hash a size-matching file once so an
+            // overwrite install can reuse it, but never trust a partial external-weight file.
+            if (validLength && expected != null && sha256(output).equals(expected.sha256, ignoreCase = true)) {
+                marker.writeText(expected.sha256)
+                return@forEachIndexed
+            }
+
+            progress("正在释放资源 ${index + 1}/${files.size}：${output.name}")
+            output.parentFile?.mkdirs()
+            val incoming = File(output.parentFile, output.name + ".incoming")
+            incoming.delete()
+            val digest = MessageDigest.getInstance("SHA-256")
+            context.assets.open("$assetNamespace/$relative").use { input ->
+                incoming.outputStream().buffered().use { target ->
+                    val buffer = ByteArray(1024 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        target.write(buffer, 0, count)
+                        digest.update(buffer, 0, count)
+                    }
+                }
+            }
+            val actualSha = digest.digest().joinToString("") { "%02x".format(it) }
+            check(incoming.length() > 0L) { "资源释放为空：$relative" }
+            if (expected != null) {
+                check(incoming.length() == expected.bytes) {
+                    "资源大小不完整：$relative · ${incoming.length()} / ${expected.bytes}"
+                }
+                check(actualSha.equals(expected.sha256, ignoreCase = true)) {
+                    "资源 SHA-256 不匹配：$relative"
+                }
+            }
+            try {
+                Files.move(
+                    incoming.toPath(), output.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE,
+                )
+            } catch (_: Throwable) {
+                Files.move(incoming.toPath(), output.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            if (expected != null) marker.writeText(expected.sha256)
+        }
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(1024 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    fun loadModels(root: File, config: EngineConfig): ModelLoadInfo {
+        if (encoder != null && currentConfig == config) return ModelLoadInfo(false, 0L)
+        unloadModels()
+        System.gc()
+        val info = readManifest()
+        val start = System.nanoTime()
+        try {
+            encoder = createSession(File(root, info.models.getValue("encoder")), config, false)
+            firstDecoder = createSession(File(root, info.models.getValue("first_decoder")), config, false)
+            stageDecoder = createSession(File(root, info.models.getValue("stage_decoder")), config, false)
+            vocoder = createSession(File(root, info.models.getValue("vocoder")), config, true)
+            currentConfig = config
+        } catch (error: Throwable) {
+            unloadModels()
+            throw error
+        }
+        return ModelLoadInfo(true, elapsedMs(start))
+    }
+
+    private fun createSession(model: File, config: EngineConfig, isVocoder: Boolean): OrtSession {
+        val options = OrtSession.SessionOptions().apply {
+            setInterOpNumThreads(1)
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            when (config.backend) {
+                BackendMode.CPU -> setIntraOpNumThreads(max(1, config.threads))
+                BackendMode.XNNPACK -> {
+                    // XNNPACK owns its worker pool. Keeping ORT's own pool at one thread avoids
+                    // two thread pools competing for the same mobile CPU cores.
+                    setIntraOpNumThreads(1)
+                    addConfigEntry("session.intra_op.allow_spinning", "0")
+                    addXnnpack(mapOf("intra_op_num_threads" to max(1, config.threads).toString()))
+                }
+                BackendMode.NNAPI_VITS -> {
+                    setIntraOpNumThreads(max(1, config.threads))
+                    if (isVocoder) {
+                        addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED))
+                    }
+                }
+            }
+        }
+        return try {
+            env.createSession(model.absolutePath, options)
+        } finally {
+            options.close()
+        }
+    }
+
+    fun runPreset(
+        root: File,
+        case: BenchmarkCase,
+        preset: TextPreset,
+        modelLoad: ModelLoadInfo,
+        requestStartedNs: Long,
+        shouldCancel: () -> Boolean = { false },
+    ): BenchmarkResult {
+        val info = readManifest()
+        return run(
+            root, case, preset.title, preset.text, preset.text, 0L,
+            "${info.presetFeatureDescription} · ${preset.bertNonZero}/${preset.bertElements} 非零",
+            preset.tensors, null, modelLoad, requestStartedNs,
+            info.presetFeatureTitle, info.presetFeatureDescription, shouldCancel
+        )
+    }
+
+    fun runPrepared(
+        root: File,
+        case: BenchmarkCase,
+        prepared: PreparedText,
+        modelLoad: ModelLoadInfo,
+        requestStartedNs: Long,
+        targetTitle: String = "自由输入",
+        featureModeTitle: String = "完整 Chinese RoBERTa",
+        featureDescription: String = "本地 INT8；非零中文特征",
+        shouldCancel: () -> Boolean = { false },
+    ): BenchmarkResult = run(
+        root, case, targetTitle, prepared.text, prepared.normalizedText, prepared.frontendMs,
+        prepared.diagnostic, emptyList(), prepared, modelLoad, requestStartedNs,
+        featureModeTitle, featureDescription, shouldCancel
+    )
+
+    private fun run(
+        root: File,
+        case: BenchmarkCase,
+        targetTitle: String,
+        targetText: String,
+        normalizedText: String,
+        frontendMs: Long,
+        frontendDiagnostic: String,
+        targetTensors: List<TensorSpec>,
+        prepared: PreparedText?,
+        modelLoad: ModelLoadInfo,
+        requestStartedNs: Long,
+        featureModeTitle: String,
+        featureDescription: String,
+        shouldCancel: () -> Boolean,
+    ): BenchmarkResult {
+        val info = readManifest()
+        checkNotNull(encoder) { "请先加载模型" }
+        val config = checkNotNull(currentConfig) { "缺少当前推理配置" }
+        checkCancelled(shouldCancel)
+        val specs = (info.sharedTensors + case.tensors + targetTensors).associateBy { it.name }
+        val fixtureStart = System.nanoTime()
+        val loadedInputs = specs.mapValuesTo(linkedMapOf()) { readTensor(root, it.value) }
+        if (prepared != null) {
+            loadedInputs["text_seq"] = OnnxTensor.createTensor(
+                env, LongBuffer.wrap(prepared.sequence), longArrayOf(1, prepared.sequence.size.toLong())
+            )
+            loadedInputs["text_bert"] = OnnxTensor.createTensor(
+                env, FloatBuffer.wrap(prepared.bert),
+                longArrayOf(prepared.sequence.size.toLong(), prepared.bertDim.toLong())
+            )
+        }
+        val fixtureLoadMs = elapsedMs(fixtureStart)
+        fun tensor(name: String): OnnxTensor = loadedInputs.getValue(name)
+        try {
+            checkCancelled(shouldCancel)
+            val encoderInputs = linkedMapOf<String, OnnxTensor>()
+            info.encoderInputNames.forEach { encoderInputs[it] = tensor(it) }
+            val encoderStart = System.nanoTime()
+            val encoderResult = encoder!!.run(encoderInputs)
+            val encoderMs = elapsedMs(encoderStart)
+            val firstInputs = linkedMapOf<String, OnnxTensor>()
+            info.firstStageInputNames.forEachIndexed { index, name -> firstInputs[name] = encoderResult.get(index) as OnnxTensor }
+            checkCancelled(shouldCancel)
+            val firstStart = System.nanoTime()
+            var decoderResult = firstDecoder!!.run(firstInputs)
+            val firstMs = elapsedMs(firstStart)
+            encoderResult.close()
+
+            val autoregressiveStart = System.nanoTime()
+            var loopIndex = 0
+            var iterations = 0
+            var stageOutputsIncludeStopCondition = false
+            while (loopIndex < 500) {
+                checkCancelled(shouldCancel)
+                val stageInputs = linkedMapOf<String, OnnxTensor>()
+                info.stageInputNames.forEachIndexed { index, name ->
+                    // The first decoder returns [y, y_emb, *present_key_values], while every
+                    // stage decoder call returns [y, y_emb, stop_condition, *present_key_values].
+                    // stop_condition is bool and must not be fed back into the float cache input.
+                    val outputIndex = if (stageOutputsIncludeStopCondition && index >= 2) index + 1 else index
+                    stageInputs[name] = decoderResult.get(outputIndex) as OnnxTensor
+                }
+                val next = stageDecoder!!.run(stageInputs)
+                decoderResult.close()
+                decoderResult = next
+                iterations += 1
+                if (tensorIsTrue(decoderResult.get(2))) break
+                stageOutputsIncludeStopCondition = true
+                loopIndex += 1
+            }
+            val autoregressiveMs = elapsedMs(autoregressiveStart)
+
+            val yTensor = decoderResult.get(0) as OnnxTensor
+            val yInfo = yTensor.info as TensorInfo
+            val yValues = LongArray(elementCount(yInfo.shape))
+            yTensor.longBuffer.get(yValues)
+            if (yValues.isNotEmpty()) yValues[yValues.lastIndex] = 0L
+            val requested = if (loopIndex == 0) yValues.size else loopIndex
+            val semanticCount = min(max(1, requested), yValues.size)
+            val selectedSemantic = yValues.copyOfRange(yValues.size - semanticCount, yValues.size)
+            // Match Genie's Python inference: remove the first invalid/EOS token and anything
+            // after it before the VITS call. Usually the forced final zero means this is a no-op,
+            // but keeping the guard prevents an early invalid token from reaching the vocoder.
+            val firstInvalid = selectedSemantic.indexOfFirst { it >= 1024L }
+            val semantic = when {
+                firstInvalid > 0 -> selectedSemantic.copyOf(firstInvalid)
+                firstInvalid == 0 -> longArrayOf(0L)
+                else -> selectedSemantic
+            }
+            val semanticTensor = OnnxTensor.createTensor(
+                env, java.nio.LongBuffer.wrap(semantic), longArrayOf(1, 1, semantic.size.toLong())
+            )
+            decoderResult.close()
+
+            checkCancelled(shouldCancel)
+            val vocoderInputs = linkedMapOf<String, OnnxTensor>()
+            info.vocoderInputNames.forEach { name ->
+                vocoderInputs[name] = if (name == "pred_semantic") semanticTensor else tensor(name)
+            }
+            val vocoderStart = System.nanoTime()
+            val audioResult = try {
+                vocoder!!.run(vocoderInputs)
+            } finally {
+                semanticTensor.close()
+            }
+            val vocoderMs = elapsedMs(vocoderStart)
+
+            val audioTensor = audioResult.get(0) as OnnxTensor
+            val audioInfo = audioTensor.info as TensorInfo
+            val audio = FloatArray(elementCount(audioInfo.shape))
+            audioTensor.floatBuffer.get(audio)
+            audioResult.close()
+            check(audio.isNotEmpty() && audio.all { it.isFinite() }) { "VITS 输出了无效音频" }
+
+            val total = encoderMs + firstMs + autoregressiveMs + vocoderMs
+            val seconds = audio.size.toDouble() / info.sampleRate
+            val peak = audio.maxOf { abs(it).toDouble() }
+            val rms = sqrt(audio.sumOf { value -> value.toDouble() * value.toDouble() } / audio.size)
+            val clippedPercent = audio.count { abs(it) >= 0.999f }.toDouble() * 100.0 / audio.size
+            return BenchmarkResult(
+                config, featureModeTitle, featureDescription,
+                case.displayTitle, targetTitle, targetText, normalizedText, frontendMs, frontendDiagnostic,
+                modelLoad.loadedThisRun, modelLoad.elapsedMs, fixtureLoadMs, encoderMs, firstMs,
+                autoregressiveMs, vocoderMs, total, iterations, seconds,
+                if (seconds > 0.0) total / (seconds * 1000.0) else Double.POSITIVE_INFINITY,
+                elapsedMs(requestStartedNs), semantic.size, semantic.contentHashCode().toUInt().toString(16),
+                peak, rms, clippedPercent, case.playbackGainDb,
+                (Debug.getPss() / 1024L).toInt(), audio
+            )
+        } finally {
+            loadedInputs.values.forEach { runCatching { it.close() } }
+        }
+    }
+
+    fun play(
+        audio: FloatArray,
+        sampleRate: Int,
+        gainDb: Double = 0.0,
+        tuning: PlaybackTuning = PlaybackTuning.NEUTRAL,
+    ): Boolean {
+        val processed = tuning.createHighFrequencySoftener(sampleRate)?.process(audio) ?: audio
+        val requestedGain = 10.0.pow(gainDb / 20.0)
+        val peak = processed.maxOfOrNull { abs(it).toDouble() } ?: 0.0
+        val safeGain = if (peak > 0.0) min(requestedGain, 0.98 / peak) else requestedGain
+        val pcm = ShortArray(processed.size) {
+            (processed[it].toDouble().times(safeGain).coerceIn(-1.0, 1.0) * Short.MAX_VALUE).toInt().toShort()
+        }
+        return playPcm(pcm, sampleRate, tuning)
+    }
+
+    fun playReferenceAsset(relative: String): Boolean {
+        val bytes = context.assets.open("$assetNamespace/$relative").use { it.readBytes() }
+        check(bytes.size >= 44 && String(bytes, 0, 4, Charsets.US_ASCII) == "RIFF") { "参考音频不是标准 WAV" }
+        var channels = 0
+        var sampleRate = 0
+        var bits = 0
+        var format = 0
+        var dataOffset = -1
+        var dataSize = 0
+        var offset = 12
+        while (offset + 8 <= bytes.size) {
+            val id = String(bytes, offset, 4, Charsets.US_ASCII)
+            val size = ByteBuffer.wrap(bytes, offset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            val body = offset + 8
+            if (id == "fmt " && size >= 16 && body + 16 <= bytes.size) {
+                val fmt = ByteBuffer.wrap(bytes, body, 16).order(ByteOrder.LITTLE_ENDIAN)
+                format = fmt.short.toInt() and 0xffff
+                channels = fmt.short.toInt() and 0xffff
+                sampleRate = fmt.int
+                fmt.int
+                fmt.short
+                bits = fmt.short.toInt() and 0xffff
+            } else if (id == "data") {
+                dataOffset = body
+                dataSize = min(size, bytes.size - body)
+                break
+            }
+            offset = body + size + (size and 1)
+        }
+        check(format == 1 && channels == 1 && bits == 16 && dataOffset >= 0) {
+            "只支持单声道 PCM16 WAV（当前 format=$format, channels=$channels, bits=$bits）"
+        }
+        val shorts = ByteBuffer.wrap(bytes, dataOffset, dataSize).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        val pcm = ShortArray(shorts.remaining())
+        shorts.get(pcm)
+        return playPcm(pcm, sampleRate, PlaybackTuning.NEUTRAL)
+    }
+
+    private fun playPcm(pcm: ShortArray, sampleRate: Int, tuning: PlaybackTuning): Boolean {
+        stopPlayback()
+        if (SystemAudioPolicy.isSilentOrVibrate(context)) return false
+        val minBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        audioTrack = AudioTrack.Builder()
+            .setAudioAttributes(SystemAudioPolicy.speechAttributes())
+            .setAudioFormat(AudioFormat.Builder().setSampleRate(sampleRate).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(max(minBuffer, pcm.size * 2))
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+        tuning.applyTo(audioTrack!!)
+        audioTrack!!.write(pcm, 0, pcm.size)
+        audioTrack!!.play()
+        return true
+    }
+
+    fun stopPlayback() {
+        audioTrack?.runCatching { stop() }
+        audioTrack?.release()
+        audioTrack = null
+    }
+
+    private fun readTensor(root: File, spec: TensorSpec): OnnxTensor {
+        val bytes = File(root, spec.file).readBytes()
+        val buffer = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.put(bytes).flip()
+        return when (spec.dtype) {
+            "float32" -> OnnxTensor.createTensor(env, buffer.asFloatBuffer(), spec.shape)
+            "int64" -> OnnxTensor.createTensor(env, buffer.asLongBuffer(), spec.shape)
+            else -> error("不支持的张量类型：${spec.dtype}")
+        }
+    }
+
+    private fun tensorIsTrue(value: ai.onnxruntime.OnnxValue): Boolean {
+        fun anyTrue(item: Any?): Boolean = when (item) {
+            is Boolean -> item
+            is BooleanArray -> item.any { it }
+            is Array<*> -> item.any { anyTrue(it) }
+            else -> false
+        }
+        return anyTrue(value.value)
+    }
+
+    private fun elementCount(shape: LongArray) = shape.fold(1L) { a, b -> a * b }.toInt()
+    private fun elapsedMs(start: Long) = (System.nanoTime() - start) / 1_000_000L
+    private fun checkCancelled(shouldCancel: () -> Boolean) {
+        if (shouldCancel()) throw CancellationException("用户停止了测试")
+    }
+
+    fun unloadModels() {
+        encoder?.close(); firstDecoder?.close(); stageDecoder?.close(); vocoder?.close()
+        encoder = null; firstDecoder = null; stageDecoder = null; vocoder = null
+        currentConfig = null
+    }
+
+    override fun close() {
+        stopPlayback()
+        unloadModels()
+    }
+}
