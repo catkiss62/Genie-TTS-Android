@@ -191,13 +191,13 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         content.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n双音色 Android 连续流式联调 v0.7.1"
+            text = "Genie-TTS v2.0.2\n双音色 Android 三语联调 v0.7.2"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         content.addView(TextView(this).apply {
-            text = "恬豆 + 奶油两套 V2 模型 · 单 AudioTrack · CPU 8线程"
+            text = "恬豆 + 乐奈两套 V2 模型 · 中英日三语 · CPU 8线程"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
@@ -597,7 +597,7 @@ class MainActivity : Activity() {
 
     private fun runLanguageTest(test: FixedLanguageTest) {
         if (!currentVoicePackage.supportsMultilingual) {
-            return showCurrent("奶油包本轮只验证中文参考音频与中文分段播放；英日测试保留给恬豆。")
+            return showCurrent("当前语音包没有开放英日测试。")
         }
         runTask(test.title) {
         val started = System.nanoTime()
@@ -632,7 +632,7 @@ class MainActivity : Activity() {
         val playbackStarted = engine.play(result.audio, engine.readManifest().sampleRate, item.playbackGainDb)
         postStatus(
             lastResultReport +
-                "\n请重点判断：是否像目标语言、音色是否仍像恬豆、发音和停顿是否自然。\n" +
+                "\n请重点判断：是否像目标语言、角色音色是否保持、发音和停顿是否自然。\n" +
                 if (playbackStarted) "已开始播放；可点击“复制上次合成报告”发给我。" else mutedPlaybackMessage()
         )
         }
@@ -640,7 +640,7 @@ class MainActivity : Activity() {
 
     private fun runRuntimePreset() {
         if (!currentVoicePackage.supportsMultilingual) {
-            return showCurrent("动态三语前端暂不用于奶油包；请切回恬豆测试。")
+            return showCurrent("当前语音包没有开放动态三语前端。")
         }
         runTask("动态三语前端") {
         val started = System.nanoTime()
@@ -713,7 +713,7 @@ class MainActivity : Activity() {
 
     private fun runLongStreamTest(test: LongStreamTest) {
         if (test.language != LongStreamLanguage.CHINESE && !currentVoicePackage.supportsMultilingual) {
-            return showCurrent("奶油包本轮只加入中文约 500 字分段试听；英日长文本请切回恬豆。")
+            return showCurrent("当前语音包没有开放英日长文本测试。")
         }
         runTask("${test.language.title}长文本试听") {
         check(!SystemAudioPolicy.isSilentOrVibrate(this)) {
@@ -814,7 +814,7 @@ class MainActivity : Activity() {
             val thermalAtEnd = thermalStatus()
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.7.1 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.2 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.displayTitle} · ${config.label}")
                 appendLine("语言：${test.language.title} · 原文：${test.text.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
@@ -874,13 +874,13 @@ class MainActivity : Activity() {
     private fun copyDialogueReport() {
         if (dialogueReport.isBlank()) return showCurrent("请先完成或中断一次流式联调测试。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.7.1", dialogueReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.7.2", dialogueReport))
         showCurrent("上一次流式联调报告已复制：$dialogueReportLabel")
     }
 
     private fun runDialogueStream(source: DialogueStreamSource) {
         if (!currentVoicePackage.supportsDialogueStreaming) {
-            return showCurrent("DeepSeek / 模拟真流式本轮只用于恬豆；奶油仅做已确认的中文分段播放测试。")
+            return showCurrent("DeepSeek / 模拟真流式本轮只用于恬豆；乐奈用于三语短句和固定长文本分段试听。")
         }
         val language = DialogueLanguage.entries[
             dialogueLanguageSelector.selectedItemPosition.coerceIn(DialogueLanguage.entries.indices)
@@ -1160,7 +1160,7 @@ class MainActivity : Activity() {
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
 
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.7.1 流式对话联调报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.2 流式对话联调报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
                 appendLine("音色：${item.displayTitle} · ${config.label}")
@@ -1206,7 +1206,7 @@ class MainActivity : Activity() {
                 (cancelAppliedNs - cancelRequestedNs) / 1_000_000L
             } else null
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.7.1 流式对话中断报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.2 流式对话中断报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
                 appendLine("结果：用户主动中断")
@@ -1324,7 +1324,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.7.1 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.7.2 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             appendLine("固定音色：${primary.displayTitle} · ${currentVoicePackage.title}")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
@@ -1387,21 +1387,21 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.7.1", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.7.2", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.7.1", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.7.2", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次中文、英文或日文长文本试听。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.7.1", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.7.2", longStreamReport))
         showCurrent("上一次长文本报告已复制：$longStreamReportLabel")
     }
 

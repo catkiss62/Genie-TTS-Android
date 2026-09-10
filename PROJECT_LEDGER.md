@@ -1,6 +1,6 @@
 # Genie-TTS Android 项目总账
 
-最后更新：2026-09-10 · 当前测试版：v0.7.1（待真机听感验证） · 稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
+最后更新：2026-09-10 · 当前测试版：v0.7.2（乐奈三语试听） · 稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
 
 ## 当前接班区
 
@@ -10,9 +10,20 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 
 正式移植请先读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。该文件是后续 AI 接手的最短入口；本总账继续保存完整历史、失败路线和真机依据。
 
-稳定开发分支为 `agent/v001-genie-benchmark`，v0.7.0 联调分支为 `agent/v070-streaming-dialogue`；当前 v0.7.1 工作分支为 `agent/v071-coalescing-naiyou`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+稳定开发分支为 `agent/v001-genie-benchmark`，v0.7.0 联调分支为 `agent/v070-streaming-dialogue`；当前 v0.7.2 工作分支为 `agent/v072-lenai-trilingual`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
 
-### v0.7.1 当前任务与恢复点
+### v0.7.2 当前任务与恢复点
+
+- 当前 APK 不再包含奶油；第二套独立模型替换为乐奈 V2.1，并保留恬豆作为已验证基线。切换模型包时必须卸载上一套会话，不能同时常驻。
+- 乐奈使用模型包 `mao.list` 的日文原标注，只设 `mao（2）`、`mao（1）`、`mao（1）+ mao（2）` 三个候选；对应参考时长约 4.39、4.07、8.46 秒。合并条严格按 1→2 拼接，不额外改语调或采样参数。
+- 日文参考的 `ref_seq` 走 Genie Japanese OpenJTalk 音素，`ref_bert` 全零；中文目标仍使用导入的 Chinese RoBERTa，英文目标使用 CMUdict/ARPAbet 零 BERT，日文目标使用 Android OpenJTalk 零 BERT。
+- 三个候选开放中英日短句与中英日固定长文本分段试听；暂不为乐奈复制 DeepSeek/模拟 LLM 真流式入口。长文本继续单 AudioTrack、无固定 200 ms 等待、播放前段时串行生成后段。
+- Genie 2.0.2 把该权重识别为标准 V2（732 音素、DPO GPT、32 kHz SoVITS），不是需要 prompt encoder 的 V2ProPlus。四个 ORT 会话与三个候选的完整 Encoder→Decoder→VITS 链均已通过桌面冒烟测试。
+- 参考越长，`ref_seq`、`ssl_content` 与 `ref_audio` 越大，主要增加固定 Encoder 输入、首次计算和内存；目标文本的自回归 Decoder/VITS 仍是主要成本。4 秒已经可用，8 秒候选只用于真机听感与 RTF 对照，不预设它一定更好。
+- 状态：公开源码位于 `agent/v072-lenai-trilingual`，草稿 PR #5；GitHub Actions 第 26 次构建的 Kotlin 编译、流式切句单测、瘦 APK 和打包工具均通过。完整 APK 共 591,454,283 字节，SHA-256 为 `7e6ddee0735fd66a4e68ebba909fb072361f7e5a0e1e39807d692e21097e955d`，ZIP、35 项乐奈资源清单及 APK v2/v3 签名验证通过，奶油条目为 0。
+- 签名边界：旧版自定义测试私钥未进入仓库，并在构建工作区清理后不可恢复；v0.7.2 改用公开、可复现的 AOSP testkey。它不能直接覆盖旧签名的 v0.7.1，同包名安装前需卸载旧版一次；后续测试版继续使用同一 AOSP testkey 即可互相覆盖。该公开测试密钥不得用于正式产品发布。
+
+### v0.7.1 历史记录
 
 - 状态：公开源码已推送到 `agent/v071-coalescing-naiyou`，PR #3 保持草稿；GitHub Actions 第 20 次构建的编译、切句单测与瘦 APK 均通过。双语音包同签名 APK 已生成并完成清单、ZIP 完整性、v2/v3 签名与旧版证书一致性校验，下一步只需真机覆盖安装和听感/停顿验证。
 - 流式对话：首个自然单元仍立即合成；此后只拼合 TTS 忙碌期间已经排队的短自然单元，不等待未来网络 delta、不增加计时器，在语言硬上限内减少过碎的后续段。
@@ -65,6 +76,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 | v0.6.4 | 播放策略修正：移除 `USAGE_ASSISTANCE_ACCESSIBILITY`；短句和流式播放统一使用媒体语音用途，并在系统静音/振动时强制阻止播放 |
 | v0.7.0 | 保留 v0.6.4 全部基线测试，新增模拟 delta 与 DeepSeek SSE 真流式、短/约 1000 字模式、三语独立前端、硬上限切句、串行推理/播放队列、加密 Key、打断和完整时序报告 |
 | v0.7.1 | 首段即时、后续只拼合已积压短句；固定/LLM 长文本统一单 AudioTrack 连续 PCM 且无固定 200 ms 等待；同 APK 加入奶油 V2 与 5 条中文参考候选，模型包切换时卸载旧会话 |
+| v0.7.2 | 当前 APK 移除奶油并加入乐奈 V2.1；用 mao（2）、mao（1）、1+2 合并参考比较 4 秒与 8 秒；三个候选开放中英日短句和三语固定长文本分段试听 |
 
 ## 真机测试基线
 

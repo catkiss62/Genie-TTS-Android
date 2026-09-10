@@ -18,10 +18,10 @@ object VoicePackageCatalog {
             supportsDialogueStreaming = true,
         ),
         VoicePackageSpec(
-            id = "naiyou",
-            title = "奶油 V2（新增试听包）",
-            assetNamespace = "benchmark_naiyou",
-            supportsMultilingual = false,
+            id = "lenai",
+            title = "乐奈 V2.1（日语参考包）",
+            assetNamespace = "benchmark_lenai",
+            supportsMultilingual = true,
             supportsDialogueStreaming = false,
         ),
     )
