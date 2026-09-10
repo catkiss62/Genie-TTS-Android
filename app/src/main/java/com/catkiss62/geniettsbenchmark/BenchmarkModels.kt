@@ -79,6 +79,8 @@ data class BenchmarkManifest(
     val models: Map<String, String>,
     val sharedTensors: List<TensorSpec>,
     val featureModes: List<FeatureMode>,
+    val presetFeatureTitle: String,
+    val presetFeatureDescription: String,
     val presets: List<TextPreset>,
     val frontend: FrontendSpec,
     val cases: List<BenchmarkCase>,
@@ -143,7 +145,10 @@ data class BenchmarkManifest(
             }
             return BenchmarkManifest(
                 root.getString("version"), root.getString("character"), root.getInt("sample_rate"), models,
-                tensors(root, "shared_tensors"), featureModes, presets, frontend, cases,
+                tensors(root, "shared_tensors"), featureModes,
+                root.optString("preset_feature_title", "完整 Chinese RoBERTa"),
+                root.optString("preset_feature_description", "预计算 FP32；非零中文特征"),
+                presets, frontend, cases,
                 strings("encoder_input_names"), strings("first_stage_input_names"),
                 strings("stage_input_names"), strings("vocoder_input_names"), strings("asset_files")
             )
@@ -163,7 +168,7 @@ data class BenchmarkResult(
     val playbackGainDb: Double, val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android 流式联调测试 v0.7.0")
+        appendLine("Genie-TTS Android 流式联调测试 v0.7.1")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
         appendLine("语言前端：$featureModeTitle")

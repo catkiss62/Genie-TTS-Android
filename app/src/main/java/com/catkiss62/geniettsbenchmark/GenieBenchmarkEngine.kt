@@ -24,7 +24,11 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sqrt
 
-class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
+class GenieBenchmarkEngine(
+    private val context: Context,
+    private val assetNamespace: String = "benchmark",
+    private val storageNamespace: String = "tiandou",
+) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
     private var manifest: BenchmarkManifest? = null
     private var encoder: OrtSession? = null
@@ -36,13 +40,19 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
 
     fun readManifest(): BenchmarkManifest {
         manifest?.let { return it }
-        val text = context.assets.open("benchmark/manifest.json").bufferedReader().use { it.readText() }
+        val text = context.assets.open("$assetNamespace/manifest.json").bufferedReader().use { it.readText() }
         return BenchmarkManifest.parse(text).also { manifest = it }
     }
 
     fun prepareAssets(progress: (String) -> Unit): File {
         val info = readManifest()
-        val root = File(context.filesDir, "genie-benchmark/${info.version}")
+        val root = if (storageNamespace == "tiandou") {
+            // Preserve the path used by v0.3.0–v0.7.0 so an overwrite install can reuse the
+            // already-extracted 370 MB model instead of copying it again.
+            File(context.filesDir, "genie-benchmark/${info.version}")
+        } else {
+            File(context.filesDir, "genie-benchmark/voices/$storageNamespace/${info.version}")
+        }
         copyAssets(root, info.assetFiles.filterNot { it.startsWith("frontend/") }, progress)
         return root
     }
@@ -121,7 +131,7 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
             if (!output.exists() || output.length() == 0L) {
                 progress("正在释放资源 ${index + 1}/${files.size}：${output.name}")
                 output.parentFile?.mkdirs()
-                context.assets.open("benchmark/$relative").use { input ->
+                context.assets.open("$assetNamespace/$relative").use { input ->
                     output.outputStream().buffered().use { target -> input.copyTo(target, 1024 * 1024) }
                 }
             }
@@ -182,12 +192,15 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
         modelLoad: ModelLoadInfo,
         requestStartedNs: Long,
         shouldCancel: () -> Boolean = { false },
-    ): BenchmarkResult = run(
-        root, case, preset.title, preset.text, preset.text, 0L,
-        "预计算 FP32 Chinese RoBERTa · ${preset.bertNonZero}/${preset.bertElements} 非零",
-        preset.tensors, null, modelLoad, requestStartedNs,
-        "完整 Chinese RoBERTa", "预设 FP32；非零中文特征", shouldCancel
-    )
+    ): BenchmarkResult {
+        val info = readManifest()
+        return run(
+            root, case, preset.title, preset.text, preset.text, 0L,
+            "${info.presetFeatureDescription} · ${preset.bertNonZero}/${preset.bertElements} 非零",
+            preset.tensors, null, modelLoad, requestStartedNs,
+            info.presetFeatureTitle, info.presetFeatureDescription, shouldCancel
+        )
+    }
 
     fun runPrepared(
         root: File,
@@ -351,7 +364,7 @@ class GenieBenchmarkEngine(private val context: Context) : AutoCloseable {
     }
 
     fun playReferenceAsset(relative: String): Boolean {
-        val bytes = context.assets.open("benchmark/$relative").use { it.readBytes() }
+        val bytes = context.assets.open("$assetNamespace/$relative").use { it.readBytes() }
         check(bytes.size >= 44 && String(bytes, 0, 4, Charsets.US_ASCII) == "RIFF") { "参考音频不是标准 WAV" }
         var channels = 0
         var sampleRate = 0
