@@ -21,7 +21,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 - 隔离：每条候选独立生成 Japanese OpenJTalk `ref_seq`、零 `ref_bert`、`ssl_content`、`ref_audio`、1024 维 `ge` 与 512 维 `ge_advanced`。四条仅共用同一对 GPT/SoVITS 权重；不得跨候选复制任何参考提示张量，也不得与恬豆资源目录混用。
 - 私有桌面门禁：四候选逐一完成 Encoder→自回归 Decoder→VITS，全都输出有限有效波形；本次固定中文目标分别生成约 3.40、3.44、4.72、3.60 秒音频。声学 ONNX 与 v0.7.5 最终酒狐包逐文件 SHA-256 相同，确认没有重新转换或串包。
 - 代码：新增 `tools/refresh_v2pro_references.py`，只从已验证基础包重建候选资源与 manifest；`tools/verify_voice_bundle.py` 从只测首候选改为遍历全部候选。酒狐原有语速、音调和高频柔化控制均保留，恬豆仍完全旁路。
-- 交付状态：等待完成公开源码检查、完整 APK 装配、签名与 APK 内资源复核；用户已授权把 v0.7.6 完整测试 APK 上传到既有未发布 GitHub 草稿页，不发布正式 Release。
+- 交付验证：公开源码位于 `agent/v076-jiuhu-video-candidates`，草稿 PR #9；GitHub Actions 第 35 次构建的 Python 工具语法、Kotlin 编译、单元测试、瘦 APK 与打包工具全部通过。完整测试 APK 为 649,663,221 字节，SHA-256 为 `af90aeaf84afdb383bd71584a5512609666c9af38110ea192ebde6f2c84ceb43`；ZIP、16 KiB `.so` 页面对齐兼容检查及 4 字节 ZIP 对齐、v2/v3 签名均通过，证书继续沿用 AOSP testkey。APK 内恬豆 44 项、酒狐 48 项资源逐项通过字节数和 SHA-256 流式复核；酒狐四候选各含六组独立参考张量，乐奈、源视频和截图条目均为 0。用户已授权把完整 APK 上传到既有未发布 GitHub 草稿页；不合并 `main`，不发布正式 Release。
 
 ### v0.7.5 小酒狐连续高频柔化
 
