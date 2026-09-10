@@ -1,6 +1,6 @@
 # Genie-TTS → AI Companion 接入指南
 
-状态：v0.6.4 是模型与播放的收口基线；v0.7.0 增加 LLM 真流式联调；v0.7.1 增加后续积压短句拼合与单 AudioTrack 连续播放；v0.7.2 用日文参考的乐奈 V2.1 验证第二套模型的中、英、日三语试听。测试引擎基于 Genie-TTS v2.0.2、GPT-SoVITS V2 权重和 Android ONNX Runtime；目标设备已完成恬豆三语与约 500 字符分段播放真机验证。
+状态：v0.6.4 是模型与播放的收口基线；v0.7.0 增加 LLM 真流式联调；v0.7.1 增加后续积压短句拼合与单 AudioTrack 连续播放；v0.7.2 增加乐奈 V2.1 三语试听，但其交付 APK 的恬豆 T2S 权重被截断，不得作为移植来源；v0.7.3 已从原始配对权重重建恬豆，并加入完整性与全链推理门禁。测试引擎基于 Genie-TTS v2.0.2、GPT-SoVITS V2 权重和 Android ONNX Runtime；目标设备已完成恬豆三语与约 500 字符分段播放真机验证。
 
 本文件面向后续接手 AI 伴侣项目的开发者或 AI。详细实验历史、失败路线和性能数据见 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。
 

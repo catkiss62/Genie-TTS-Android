@@ -71,6 +71,7 @@ data class EngineConfig(val backend: BackendMode, val threads: Int) {
 }
 
 data class ModelLoadInfo(val loadedThisRun: Boolean, val elapsedMs: Long)
+data class AssetIntegrity(val bytes: Long, val sha256: String)
 
 data class BenchmarkManifest(
     val version: String,
@@ -89,6 +90,7 @@ data class BenchmarkManifest(
     val stageInputNames: List<String>,
     val vocoderInputNames: List<String>,
     val assetFiles: List<String>,
+    val assetIntegrity: Map<String, AssetIntegrity>,
 ) {
     companion object {
         fun parse(text: String): BenchmarkManifest {
@@ -101,6 +103,12 @@ data class BenchmarkManifest(
             fun tensors(obj: JSONObject, key: String) = obj.getJSONArray(key).let { a -> List(a.length()) { tensor(a.getJSONObject(it)) } }
             val modelObject = root.getJSONObject("models")
             val models = modelObject.keys().asSequence().associateWith { modelObject.getString(it) }
+            val assetIntegrity = root.optJSONObject("asset_integrity")?.let { integrityObject ->
+                integrityObject.keys().asSequence().associateWith { path ->
+                    val item = integrityObject.getJSONObject(path)
+                    AssetIntegrity(item.getLong("bytes"), item.getString("sha256"))
+                }
+            } ?: emptyMap()
             val featureModes = root.getJSONArray("feature_modes").let { array ->
                 List(array.length()) { index ->
                     val item = array.getJSONObject(index)
@@ -150,7 +158,8 @@ data class BenchmarkManifest(
                 root.optString("preset_feature_description", "预计算 FP32；非零中文特征"),
                 presets, frontend, cases,
                 strings("encoder_input_names"), strings("first_stage_input_names"),
-                strings("stage_input_names"), strings("vocoder_input_names"), strings("asset_files")
+                strings("stage_input_names"), strings("vocoder_input_names"), strings("asset_files"),
+                assetIntegrity,
             )
         }
     }
@@ -168,7 +177,7 @@ data class BenchmarkResult(
     val playbackGainDb: Double, val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android 三语音色测试 v0.7.2")
+        appendLine("Genie-TTS Android 三语音色测试 v0.7.3")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
         appendLine("语言前端：$featureModeTitle")
