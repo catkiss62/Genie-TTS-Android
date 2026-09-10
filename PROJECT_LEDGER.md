@@ -18,6 +18,8 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 - 原因类型：私有大文件在 APK 组装前已被截断；旧校验只确认文件存在、ZIP 可解压和 APK 签名有效，这些不能证明 ONNX 外部权重可用。
 - 恢复：从原始 `恬豆GPT.ckpt` + `恬豆SoVITS.pth` 重新转换 V2，完整权重为 306,827,268 字节；桌面完整链路通过，实际生成有限波形。
 - 防回归：manifest 增加逐文件字节数和 SHA-256；Android 释放改为 `.incoming` 完整校验后原子替换；打包前使用 `tools/verify_voice_bundle.py` 同时跑恬豆和乐奈完整推理。
+- 交付验证：GitHub Actions 第 28 次构建的 Kotlin 编译、单元测试、瘦 APK 与打包工具均通过。完整 APK 为 697,606,248 字节，SHA-256 为 `9a40b4773f539e9f09179be8cd006d1254806bfb598d6351f31a62bcc28fac4a`；APK 内恬豆 44 项、乐奈 34 项资源均通过字节数与 SHA-256 流式复核，两套资源又分别完成一次 Encoder→Decoder→VITS 推理。APK v2/v3 签名有效，沿用 v0.7.2 的 AOSP testkey，可直接覆盖 v0.7.2 并保留应用数据。
+- 公开源码：`agent/v073-tiandou-integrity-hotfix`，草稿 PR #6；不合并主分支，也不发布正式 Release。
 - 旧 v0.7.2 交付标记为失败包，不可用于恬豆回归或正式移植。
 
 ### v0.7.2 历史任务与恢复点
