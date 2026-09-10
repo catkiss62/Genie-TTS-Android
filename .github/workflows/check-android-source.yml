@@ -50,6 +50,7 @@ jobs:
           path: |
             /usr/local/lib/android/sdk/build-tools/37.0.0/apksigner
             /usr/local/lib/android/sdk/build-tools/37.0.0/lib/apksigner.jar
+            /usr/local/lib/android/sdk/build-tools/37.0.0/lib64/libc++.so
             /usr/local/lib/android/sdk/build-tools/37.0.0/zipalign
           if-no-files-found: error
           retention-days: 1
