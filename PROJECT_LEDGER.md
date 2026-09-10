@@ -1,6 +1,6 @@
 # Genie-TTS Android 项目总账
 
-最后更新：2026-09-11 · 当前测试版：v0.7.3（恬豆完整性热修） · 稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
+最后更新：2026-09-11 · 当前测试版：v0.7.4（小酒狐 V2Pro 三语） · 稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
 
 ## 当前接班区
 
@@ -10,7 +10,20 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 
 正式移植请先读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。该文件是后续 AI 接手的最短入口；本总账继续保存完整历史、失败路线和真机依据。
 
-稳定开发分支为 `agent/v001-genie-benchmark`，v0.7.0 联调分支为 `agent/v070-streaming-dialogue`；v0.7.2 功能分支为 `agent/v072-lenai-trilingual`，v0.7.3 在其上修复恬豆私有权重完整性。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+稳定开发分支为 `agent/v001-genie-benchmark`，v0.7.0 联调分支为 `agent/v070-streaming-dialogue`；v0.7.2 功能分支为 `agent/v072-lenai-trilingual`，v0.7.3 在其上修复恬豆私有权重完整性；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+
+### v0.7.4 小酒狐 V2Pro 三语
+
+- 当前双模型组合改为“恬豆 V2 + 小酒狐 V2Pro”；乐奈从当前语音包目录和 APK 资源装配清单移除，历史结论仍保留在 v0.7.2 记录中。
+- 酒狐资源包只有一对配套 GPT/SoVITS 权重和一条约 5.04 秒的日语参考 `idle50.wav`，因此只设“小酒狐（单候选）”，不把两份权重误作两个音色。
+- 酒狐 checkpoint 使用 732 音素、704 频谱、1024 维全局说话人提示和 512 维高级提示。普通 V2 图可加载但会在 MRTE 发生 512/1024 广播失败；V2ProPlus VITS 模板又使用不同的转置卷积核，实际推理会失败。最终私有转换保留酒狐兼容的 V2 主图，只将 MRTE 的一个消费者路由到离线 `ge_advanced`，将 Decoder/Flow 的五个消费者路由到离线 `ge`。
+- prompt encoder 与约 176 MB 的 speaker encoder 只在私有打包阶段运行；APK 仅保存每条参考对应的 4 KB `ge`、2 KB `ge_advanced`，仍维持四个 ONNX 会话，不增加手机常驻模型。
+- `tools/prepare_mobile_v2_voice_assets.py` 新增成对 checkpoint 形状核验及 V2Pro 双提示制作；`tools/verify_voice_bundle.py` 改为按 manifest 验证 `ref_audio` 或 `ge/ge_advanced` VITS 输入，禁止再把普通 V2 输入写死。
+- 桌面验证：酒狐中文、英文、日文分别生成 3.800 秒、3.600 秒、3.720 秒有效音频，峰值分别为 0.3214、0.4197、0.3708；恬豆资源再次完成全链推理。最终 APK 仍需真机听感确认。
+- 播放控制只对酒狐显示和生效：语速 0.70×–1.30×、步长 0.05×，通过 Android `PlaybackParams` time-stretch 保持音调；独立音调范围 -6–+6 半音、步长 1 半音。默认 1.00×/0 半音，恬豆固定原速原调。
+- 隔离边界：恬豆继续使用兼容旧安装的 `genie-benchmark/<manifest-version>`；酒狐使用 `genie-benchmark/voices/jiuhu/<manifest-version>`。切包时关闭旧四会话、清空当前资源根和合成结果，再加载新包，禁止跨包复用参考张量。
+- 范围：酒狐开放中英日短句、动态三语预设与三语固定长文本；DeepSeek/模拟 LLM 真流式继续只开放恬豆。
+- 状态：源码和私有酒狐 bundle 已完成；待 GitHub 编译、APK 装配、签名及最终完整性复核后补充交付记录。
 
 ### v0.7.3 恬豆无声热修
 
@@ -88,6 +101,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 | v0.7.1 | 首段即时、后续只拼合已积压短句；固定/LLM 长文本统一单 AudioTrack 连续 PCM 且无固定 200 ms 等待；同 APK 加入奶油 V2 与 5 条中文参考候选，模型包切换时卸载旧会话 |
 | v0.7.2 | 当前 APK 移除奶油并加入乐奈 V2.1；用 mao（2）、mao（1）、1+2 合并参考比较 4 秒与 8 秒；三个候选开放中英日短句和三语固定长文本分段试听 |
 | v0.7.3 | 修复 v0.7.2 恬豆 T2S 外部权重截断；新增逐资源完整性、原子释放和打包前完整 ONNX 推理门禁 |
+| v0.7.4 | 当前 APK 移除乐奈并加入小酒狐 V2Pro 单候选三语；离线生成双提示特征；酒狐专属独立语速/音调滑钮 |
 
 ## 真机测试基线
 

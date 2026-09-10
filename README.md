@@ -4,6 +4,16 @@
 
 开发结论、测试数据、私有资源说明和后续接入清单集中记录在 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。准备移植到 AI 伴侣时直接阅读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。
 
+## v0.7.4：小酒狐 V2Pro 三语与独立播放调节
+
+- 当前 APK 保留已验证的恬豆 V2，移除乐奈，并把第二套独立模型替换为小酒狐 V2Pro。
+- 酒狐包中的 GPT `.ckpt` 与 SoVITS `.pth` 是一套配对模型，不是两个音色；只使用包内 `idle50.wav` 与日文原标注作为一个候选。
+- 酒狐的 SoVITS 具有 1024 维全局说话人提示和独立的 512 维高级提示。私有打包阶段离线生成 `ge/ge_advanced`；APK 不包含 prompt encoder 或 speaker encoder，运行时仍只加载 Encoder、两个 Decoder 和 VITS 四个会话。
+- 直接把酒狐套进标准 V2 VITS 会在 MRTE 出现 512/1024 广播错误；直接采用 V2ProPlus VITS 模板又会与酒狐的上采样卷积结构不符。资源脚本因此保留兼容的 V2 主图，只把六个说话人提示消费者路由到酒狐专属的离线双提示张量，并用源 checkpoint 逐项验证外部权重形状。
+- 单候选已经完成中文、英文、日文三次 Encoder→自回归 Decoder→VITS 桌面推理；恬豆基线也再次通过完整链路。
+- 只在选择小酒狐时显示播放调节：语速 `0.70×–1.30×`，使用 Android `PlaybackParams` time-stretch 并固定原音调；音调另设 `-6–+6` 半音。默认均为原速原调，恬豆始终不应用这两项设置。
+- 酒狐开放三语短句、动态三语预设和三语固定长文本；DeepSeek/模拟 LLM 真流式仍只用于恬豆，避免本轮同时扩大验证范围。
+
 ## v0.7.3：恬豆权重完整性热修
 
 - 修复 v0.7.2 恬豆 `t2s_shared_fp32.bin` 被截断导致首阶段 Decoder 无法加载的回归；正确文件为 306,827,268 字节。

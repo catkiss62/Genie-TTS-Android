@@ -8,6 +8,7 @@ local.properties
 app/src/main/assets/benchmark/
 app/src/main/assets/benchmark_naiyou/
 app/src/main/assets/benchmark_lenai/
+app/src/main/assets/benchmark_jiuhu/
 app/src/main/assets/openjtalk/
 app/src/main/jniLibs/arm64-v8a/libopenjtalk_native.so
 app/src/main/jniLibs/arm64-v8a/libc++_shared.so

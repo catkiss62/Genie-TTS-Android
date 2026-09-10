@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Build an Android audition bundle for one converted Genie V2 voice.
+"""Build an Android audition bundle for one converted Genie V2 or V2Pro voice.
 
 Chinese references use the same character-tokenized INT8 RoBERTa path as ChineseFrontend.kt;
 English and Japanese references use their native phonemes with zero BERT, matching Genie.
 Original checkpoints and recordings stay private; only this reproducible builder is public.
+V2Pro prompt/speaker encoders run only while packaging; Android receives per-reference
+ge/ge_advanced tensors and keeps the same four-session runtime as V2.
 """
 
 from __future__ import annotations
@@ -117,10 +119,16 @@ def adapt_legacy_v2_templates(models_dir: Path) -> None:
         fixed_dimension=192,
     )
     # The spectral projection is [128, bins], so infer the second dimension separately.
-    spectral = next(
+    spectral = next((
         item for item in vits.graph.initializer
         if item.name == "vq_model.ref_enc.spectral.0.fc.weight"
-    )
+    ), None)
+    # V2Pro/V2ProPlus moves the reference encoder into a separate prompt graph and
+    # feeds precomputed ge/ge_advanced tensors to VITS. There is no spectral layer
+    # to patch in that graph.
+    if spectral is None:
+        onnx.save(vits, vits_path)
+        return
     spectral_length = _external_length(spectral)
     if spectral_length is None or spectral_length % (4 * 128) != 0:
         raise RuntimeError(f"无法识别 VITS 参考频谱宽度: length={spectral_length}")
@@ -152,7 +160,121 @@ def validate_model_sessions(models_dir: Path) -> None:
         del session
 
 
-def copy_models(source: Path, output: Path) -> dict:
+def adapt_source_weight_shapes(
+    models_dir: Path,
+    gpt_checkpoint: Path,
+    sovits_checkpoint: Path,
+) -> int:
+    """Align every external initializer with the paired source checkpoint.
+
+    GPT-SoVITS v2Pro uses the same four-session Android graph as V2, but some
+    speaker-conditioning layers are 1024-wide instead of the 512-wide shapes in
+    Genie's bundled V2 template. The converter writes the correct bytes and
+    lengths while retaining those stale template dimensions. Reading the paired
+    checkpoints lets us correct every initializer deterministically instead of
+    guessing from a file size or accidentally borrowing another voice's shapes.
+    """
+    from genie_tts.Converter.load_state_dict import load_gpt_model, load_sovits_model
+
+    gpt_weights = load_gpt_model(str(gpt_checkpoint))["weight"]
+    sovits_weights = load_sovits_model(str(sovits_checkpoint))["weight"]
+
+    def gpt_tensor(name: str):
+        return gpt_weights.get("model." + name.replace("transformer_encoder", "h"))
+
+    def sovits_tensor(name: str):
+        key = name[len("vq_model."):] if name.startswith("vq_model.") else name
+        return sovits_weights.get(key)
+
+    def encoder_tensor(name: str):
+        if name.startswith("encoder."):
+            return gpt_weights.get("model." + name[len("encoder."):])
+        if name.startswith("vits."):
+            return sovits_weights.get(name[len("vits."):])
+        return None
+
+    sources = {
+        "t2s_encoder_fp32.onnx": encoder_tensor,
+        "t2s_first_stage_decoder_fp32.onnx": gpt_tensor,
+        "t2s_stage_decoder_fp32.onnx": gpt_tensor,
+        "vits_fp32.onnx": sovits_tensor,
+    }
+    changed = 0
+    for filename, resolve in sources.items():
+        path = models_dir / filename
+        model = onnx.load(path, load_external_data=False)
+        model_changed = False
+        for initializer in model.graph.initializer:
+            if not initializer.external_data:
+                continue
+            source_tensor = resolve(initializer.name)
+            if source_tensor is None:
+                raise RuntimeError(f"源权重缺少 ONNX 初始化器：{filename}:{initializer.name}")
+            external_length = _external_length(initializer)
+            expected_length = source_tensor.numel() * 4
+            if external_length != expected_length:
+                raise RuntimeError(
+                    f"外部权重长度不一致：{filename}:{initializer.name} · "
+                    f"{external_length} / {expected_length}"
+                )
+            source_shape = list(source_tensor.shape)
+            if list(initializer.dims) != source_shape:
+                del initializer.dims[:]
+                initializer.dims.extend(source_shape)
+                changed += 1
+                model_changed = True
+        if model_changed:
+            onnx.save(model, path)
+    return changed
+
+
+def route_v2pro_prompt_features(models_dir: Path) -> None:
+    """Feed offline V2Pro speaker embeddings into Genie's otherwise-compatible V2 graph.
+
+    V2Pro keeps V2's decoder and waveform generator but widens the global speaker
+    embedding to 1024 channels. Its prompt encoder also derives a separate 512-channel
+    advanced embedding for MRTE. Genie's V2 graph originally derives one embedding from
+    ref_audio and therefore cannot represent the split. Replace only those six consumers;
+    the rest of the proven Android V2 graph, including its upsampling configuration, stays
+    untouched.
+    """
+    path = models_dir / "vits_fp32.onnx"
+    model = onnx.load(path, load_external_data=False)
+    input_names = {item.name for item in model.graph.input}
+    if {"ge", "ge_advanced"}.issubset(input_names):
+        return
+    reference_output = "/vq_model/ref_enc/Unsqueeze_6_output_0"
+    advanced_consumers = 0
+    global_consumers = 0
+    for node in model.graph.node:
+        for index, name in enumerate(node.input):
+            if name != reference_output:
+                continue
+            if node.name == "/vq_model/enc_p/mrte/Add_1":
+                node.input[index] = "ge_advanced"
+                advanced_consumers += 1
+            else:
+                node.input[index] = "ge"
+                global_consumers += 1
+    if advanced_consumers != 1 or global_consumers != 5:
+        raise RuntimeError(
+            "V2Pro 提示路由结构不符合预期："
+            f"advanced={advanced_consumers}, global={global_consumers}"
+        )
+    model.graph.input.extend([
+        onnx.helper.make_tensor_value_info("ge", onnx.TensorProto.FLOAT, [1, 1024, 1]),
+        onnx.helper.make_tensor_value_info("ge_advanced", onnx.TensorProto.FLOAT, [1, 512, 1]),
+    ])
+    onnx.save(model, path)
+
+
+def copy_models(
+    source: Path,
+    output: Path,
+    gpt_checkpoint: Path | None = None,
+    sovits_checkpoint: Path | None = None,
+    use_prompt_features: bool = False,
+) -> dict:
     target = output / "models"
     target.mkdir(parents=True, exist_ok=True)
     names = [
@@ -171,6 +293,13 @@ def copy_models(source: Path, output: Path) -> dict:
         target / "vits_fp32.bin"
     )
     adapt_legacy_v2_templates(target)
+    if (gpt_checkpoint is None) != (sovits_checkpoint is None):
+        raise RuntimeError("--gpt-checkpoint 与 --sovits-checkpoint 必须成对提供。")
+    if gpt_checkpoint is not None and sovits_checkpoint is not None:
+        changed = adapt_source_weight_shapes(target, gpt_checkpoint, sovits_checkpoint)
+        print(f"source-shape validation: PASS · patched={changed}")
+    if use_prompt_features:
+        route_v2pro_prompt_features(target)
     validate_model_sessions(target)
     return {
         "encoder": "models/t2s_encoder_fp32.onnx",
@@ -220,6 +349,27 @@ def build(args: argparse.Namespace) -> None:
     os.environ["GENIE_DATA_DIR"] = str(args.genie_data.resolve())
 
     from genie_tts.Audio.ReferenceAudio import ReferenceAudio
+    from genie_tts.ModelManager import load_session_with_fp16_conversion
+
+    converted_model_dir = args.converted_model_dir.resolve()
+    converted_vocoder_inputs = input_names(converted_model_dir / "vits_fp32.onnx")
+    needs_prompt_features = "ge" in converted_vocoder_inputs or "ge_advanced" in converted_vocoder_inputs
+    prompt_model_dir = args.prompt_encoder_model_dir.resolve() if args.prompt_encoder_model_dir else None
+    if needs_prompt_features and prompt_model_dir is None:
+        raise RuntimeError("该 V2Pro VITS 需要 ge/ge_advanced；请提供 --prompt-encoder-model-dir。")
+
+    speaker_encoder = None
+    prompt_encoder = None
+    if prompt_model_dir is not None:
+        speaker_encoder = onnxruntime.InferenceSession(
+            str(args.genie_data.resolve() / "speaker_encoder.onnx"),
+            providers=["CPUExecutionProvider"],
+        )
+        prompt_encoder = load_session_with_fp16_conversion(
+            str(prompt_model_dir / "prompt_encoder_fp32.onnx"),
+            str(prompt_model_dir / "prompt_encoder_fp16.bin"),
+            providers=["CPUExecutionProvider"],
+        )
 
     shared_frontend = args.shared_frontend.resolve()
     frontend_target = output / "frontend"
@@ -251,6 +401,33 @@ def build(args: argparse.Namespace) -> None:
         audio_target = output / audio_relative
         audio_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(audio_path, audio_target)
+        reference_tensors = [
+            write_tensor(output, f"tensors/{item['id']}_ref_seq.tensor", "ref_seq", ref_seq),
+            write_tensor(output, f"tensors/{item['id']}_ref_bert.tensor", "ref_bert", ref_bert),
+            write_tensor(output, f"tensors/{item['id']}_ssl_content.tensor", "ssl_content", prompt.ssl_content),
+            write_tensor(
+                output,
+                f"tensors/{item['id']}_ref_audio.tensor",
+                "ref_audio",
+                prompt.audio_32k,
+            ),
+        ]
+        if prompt_encoder is not None and speaker_encoder is not None:
+            sv_input = speaker_encoder.get_inputs()[0].name
+            sv_emb = speaker_encoder.run(None, {sv_input: prompt.audio_16k})[0]
+            ge, ge_advanced = prompt_encoder.run(None, {
+                "ref_audio": prompt.audio_32k,
+                "sv_emb": sv_emb,
+            })
+            reference_tensors.extend([
+                write_tensor(output, f"tensors/{item['id']}_ge.tensor", "ge", ge),
+                write_tensor(
+                    output,
+                    f"tensors/{item['id']}_ge_advanced.tensor",
+                    "ge_advanced",
+                    ge_advanced,
+                ),
+            ])
         cases.append({
             "id": item["id"],
             "title": item["title"],
@@ -258,12 +435,7 @@ def build(args: argparse.Namespace) -> None:
             "reference_text": item["transcript"],
             "reference_language": reference_language,
             "reference_audio": audio_relative,
-            "tensors": [
-                write_tensor(output, f"tensors/{item['id']}_ref_seq.tensor", "ref_seq", ref_seq),
-                write_tensor(output, f"tensors/{item['id']}_ref_bert.tensor", "ref_bert", ref_bert),
-                write_tensor(output, f"tensors/{item['id']}_ssl_content.tensor", "ssl_content", prompt.ssl_content),
-                write_tensor(output, f"tensors/{item['id']}_ref_audio.tensor", "ref_audio", prompt.audio_32k),
-            ],
+            "tensors": reference_tensors,
         })
 
     if args.preset_source is not None:
@@ -311,7 +483,13 @@ def build(args: argparse.Namespace) -> None:
             "tone_diagnostic": "手机端同构中文 G2P 与 INT8 RoBERTa",
         }]
 
-    models = copy_models(args.converted_model_dir.resolve(), output)
+    models = copy_models(
+        converted_model_dir,
+        output,
+        args.gpt_checkpoint.resolve() if args.gpt_checkpoint else None,
+        args.sovits_checkpoint.resolve() if args.sovits_checkpoint else None,
+        use_prompt_features=prompt_model_dir is not None,
+    )
     manifest = {
         "version": args.version,
         "character": args.character,
@@ -350,6 +528,24 @@ def build(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--converted-model-dir", type=Path, required=True)
+    parser.add_argument(
+        "--prompt-encoder-model-dir",
+        type=Path,
+        help=(
+            "V2Pro/V2ProPlus 转换目录，包含 prompt_encoder_fp32.onnx 与 "
+            "prompt_encoder_fp16.bin；只离线生成 ge/ge_advanced，不打入 APK。"
+        ),
+    )
+    parser.add_argument(
+        "--gpt-checkpoint",
+        type=Path,
+        help="可选的配对 GPT checkpoint；用于逐项校正 v2Pro 外部权重形状。",
+    )
+    parser.add_argument(
+        "--sovits-checkpoint",
+        type=Path,
+        help="可选的配对 SoVITS checkpoint；必须与 --gpt-checkpoint 同时提供。",
+    )
     parser.add_argument("--genie-data", type=Path, required=True)
     parser.add_argument("--references-dir", type=Path, required=True)
     parser.add_argument("--references-json", type=Path, required=True)

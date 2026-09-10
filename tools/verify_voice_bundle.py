@@ -83,9 +83,8 @@ def verify(root: Path) -> None:
         semantic = semantic[: max(1, int(invalid[0]))]
     semantic = semantic.reshape(1, 1, -1)
     audio = sessions["vocoder"].run(None, {
-        "text_seq": tensors["text_seq"],
-        "pred_semantic": semantic,
-        "ref_audio": tensors["ref_audio"],
+        name: semantic if name == "pred_semantic" else tensors[name]
+        for name in manifest["vocoder_input_names"]
     })[0]
     if audio.size == 0 or not np.isfinite(audio).all():
         raise RuntimeError(f"{root}: VITS 输出无效")

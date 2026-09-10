@@ -28,6 +28,7 @@ class StreamingAudioPlayer(
     context: Context,
     private val sampleRate: Int,
     private val gainDb: Double,
+    private val tuning: PlaybackTuning = PlaybackTuning.NEUTRAL,
 ) : AutoCloseable {
     private val appContext = context.applicationContext
     private sealed interface Command {
@@ -112,6 +113,7 @@ class StreamingAudioPlayer(
                 .setBufferSizeInBytes(bufferBytes)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
+            tuning.applyTo(localTrack)
             track = localTrack
 
             var firstAudio = true

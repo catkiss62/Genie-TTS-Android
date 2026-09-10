@@ -412,14 +412,19 @@ class GenieBenchmarkEngine(
         }
     }
 
-    fun play(audio: FloatArray, sampleRate: Int, gainDb: Double = 0.0): Boolean {
+    fun play(
+        audio: FloatArray,
+        sampleRate: Int,
+        gainDb: Double = 0.0,
+        tuning: PlaybackTuning = PlaybackTuning.NEUTRAL,
+    ): Boolean {
         val requestedGain = 10.0.pow(gainDb / 20.0)
         val peak = audio.maxOfOrNull { abs(it).toDouble() } ?: 0.0
         val safeGain = if (peak > 0.0) min(requestedGain, 0.98 / peak) else requestedGain
         val pcm = ShortArray(audio.size) {
             (audio[it].toDouble().times(safeGain).coerceIn(-1.0, 1.0) * Short.MAX_VALUE).toInt().toShort()
         }
-        return playPcm(pcm, sampleRate)
+        return playPcm(pcm, sampleRate, tuning)
     }
 
     fun playReferenceAsset(relative: String): Boolean {
@@ -457,10 +462,10 @@ class GenieBenchmarkEngine(
         val shorts = ByteBuffer.wrap(bytes, dataOffset, dataSize).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
         val pcm = ShortArray(shorts.remaining())
         shorts.get(pcm)
-        return playPcm(pcm, sampleRate)
+        return playPcm(pcm, sampleRate, PlaybackTuning.NEUTRAL)
     }
 
-    private fun playPcm(pcm: ShortArray, sampleRate: Int): Boolean {
+    private fun playPcm(pcm: ShortArray, sampleRate: Int, tuning: PlaybackTuning): Boolean {
         stopPlayback()
         if (SystemAudioPolicy.isSilentOrVibrate(context)) return false
         val minBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -470,6 +475,7 @@ class GenieBenchmarkEngine(
             .setBufferSizeInBytes(max(minBuffer, pcm.size * 2))
             .setTransferMode(AudioTrack.MODE_STATIC)
             .build()
+        tuning.applyTo(audioTrack!!)
         audioTrack!!.write(pcm, 0, pcm.size)
         audioTrack!!.play()
         return true

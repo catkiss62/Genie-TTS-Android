@@ -6,6 +6,7 @@ data class VoicePackageSpec(
     val assetNamespace: String,
     val supportsMultilingual: Boolean,
     val supportsDialogueStreaming: Boolean,
+    val supportsPlaybackTuning: Boolean = false,
 )
 
 object VoicePackageCatalog {
@@ -18,11 +19,12 @@ object VoicePackageCatalog {
             supportsDialogueStreaming = true,
         ),
         VoicePackageSpec(
-            id = "lenai",
-            title = "乐奈 V2.1（日语参考包）",
-            assetNamespace = "benchmark_lenai",
+            id = "jiuhu",
+            title = "小酒狐 V2Pro（单候选）",
+            assetNamespace = "benchmark_jiuhu",
             supportsMultilingual = true,
             supportsDialogueStreaming = false,
+            supportsPlaybackTuning = true,
         ),
     )
 }
