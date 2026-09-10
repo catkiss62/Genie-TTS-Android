@@ -15,6 +15,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.EnumSet
 import java.util.concurrent.CancellationException
@@ -126,16 +128,73 @@ class GenieBenchmarkEngine(
     }
 
     private fun copyAssets(root: File, files: List<String>, progress: (String) -> Unit) {
+        val integrity = readManifest().assetIntegrity
         files.forEachIndexed { index, relative ->
             val output = File(root, relative)
-            if (!output.exists() || output.length() == 0L) {
-                progress("正在释放资源 ${index + 1}/${files.size}：${output.name}")
-                output.parentFile?.mkdirs()
-                context.assets.open("$assetNamespace/$relative").use { input ->
-                    output.outputStream().buffered().use { target -> input.copyTo(target, 1024 * 1024) }
+            val expected = integrity[relative]
+            val marker = File(output.parentFile, output.name + ".sha256")
+            val validLength = output.isFile && output.length() > 0L &&
+                (expected == null || output.length() == expected.bytes)
+            val validMarker = expected == null ||
+                (marker.isFile && marker.readText().trim().equals(expected.sha256, ignoreCase = true))
+            if (validLength && validMarker) return@forEachIndexed
+
+            // Older builds did not leave a digest marker. Hash a size-matching file once so an
+            // overwrite install can reuse it, but never trust a partial external-weight file.
+            if (validLength && expected != null && sha256(output).equals(expected.sha256, ignoreCase = true)) {
+                marker.writeText(expected.sha256)
+                return@forEachIndexed
+            }
+
+            progress("正在释放资源 ${index + 1}/${files.size}：${output.name}")
+            output.parentFile?.mkdirs()
+            val incoming = File(output.parentFile, output.name + ".incoming")
+            incoming.delete()
+            val digest = MessageDigest.getInstance("SHA-256")
+            context.assets.open("$assetNamespace/$relative").use { input ->
+                incoming.outputStream().buffered().use { target ->
+                    val buffer = ByteArray(1024 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        target.write(buffer, 0, count)
+                        digest.update(buffer, 0, count)
+                    }
                 }
             }
+            val actualSha = digest.digest().joinToString("") { "%02x".format(it) }
+            check(incoming.length() > 0L) { "资源释放为空：$relative" }
+            if (expected != null) {
+                check(incoming.length() == expected.bytes) {
+                    "资源大小不完整：$relative · ${incoming.length()} / ${expected.bytes}"
+                }
+                check(actualSha.equals(expected.sha256, ignoreCase = true)) {
+                    "资源 SHA-256 不匹配：$relative"
+                }
+            }
+            try {
+                Files.move(
+                    incoming.toPath(), output.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE,
+                )
+            } catch (_: Throwable) {
+                Files.move(incoming.toPath(), output.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            if (expected != null) marker.writeText(expected.sha256)
         }
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(1024 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     fun loadModels(root: File, config: EngineConfig): ModelLoadInfo {

@@ -4,6 +4,13 @@
 
 开发结论、测试数据、私有资源说明和后续接入清单集中记录在 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。准备移植到 AI 伴侣时直接阅读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。
 
+## v0.7.3：恬豆权重完整性热修
+
+- 修复 v0.7.2 恬豆 `t2s_shared_fp32.bin` 被截断导致首阶段 Decoder 无法加载的回归；正确文件为 306,827,268 字节。
+- 模型从用户提供的原始恬豆 GPT/SoVITS 配对权重重新转换，并完成 Encoder→自回归 Decoder→VITS 完整推理验证。
+- 资源释放改为临时文件验证后原子替换；manifest 记录每项资源的字节数和 SHA-256，旧安装中的半截文件会自动重新释放。
+- 新增 `tools/verify_voice_bundle.py`；私有 APK 打包前必须验证全部清单、四个 ONNX 会话和一次完整合成，不再只检查 ZIP 和文件存在。
+
 ## v0.7.2：乐奈 V2.1 三语参考试听
 
 - 奶油模型与全部候选已从当前 APK 移除；第二套模型替换为用户提供的乐奈 V2.1 配对权重。

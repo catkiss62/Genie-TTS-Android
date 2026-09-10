@@ -191,7 +191,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         content.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n双音色 Android 三语联调 v0.7.2"
+            text = "Genie-TTS v2.0.2\n双音色 Android 三语联调 v0.7.3"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
@@ -814,7 +814,7 @@ class MainActivity : Activity() {
             val thermalAtEnd = thermalStatus()
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.7.2 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.3 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.displayTitle} · ${config.label}")
                 appendLine("语言：${test.language.title} · 原文：${test.text.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
@@ -874,7 +874,7 @@ class MainActivity : Activity() {
     private fun copyDialogueReport() {
         if (dialogueReport.isBlank()) return showCurrent("请先完成或中断一次流式联调测试。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.7.2", dialogueReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.7.3", dialogueReport))
         showCurrent("上一次流式联调报告已复制：$dialogueReportLabel")
     }
 
@@ -1160,7 +1160,7 @@ class MainActivity : Activity() {
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
 
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.7.2 流式对话联调报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.3 流式对话联调报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
                 appendLine("音色：${item.displayTitle} · ${config.label}")
@@ -1206,7 +1206,7 @@ class MainActivity : Activity() {
                 (cancelAppliedNs - cancelRequestedNs) / 1_000_000L
             } else null
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.7.2 流式对话中断报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.3 流式对话中断报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
                 appendLine("结果：用户主动中断")
@@ -1324,7 +1324,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.7.2 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.7.3 自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             appendLine("固定音色：${primary.displayTitle} · ${currentVoicePackage.title}")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
@@ -1387,21 +1387,21 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.7.2", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.7.3", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.7.2", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.7.3", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次中文、英文或日文长文本试听。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.7.2", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.7.3", longStreamReport))
         showCurrent("上一次长文本报告已复制：$longStreamReportLabel")
     }
 

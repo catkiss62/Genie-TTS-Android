@@ -333,6 +333,14 @@ def build(args: argparse.Namespace) -> None:
         str(path.relative_to(output)).replace(os.sep, "/")
         for path in output.rglob("*") if path.is_file() and path.name != "manifest.json"
     ) + ["manifest.json"]
+    manifest["asset_integrity"] = {
+        relative: {
+            "bytes": (output / relative).stat().st_size,
+            "sha256": sha256(output / relative),
+        }
+        for relative in manifest["asset_files"]
+        if relative != "manifest.json"
+    }
     (output / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )

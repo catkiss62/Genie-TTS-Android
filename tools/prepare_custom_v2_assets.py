@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -14,6 +15,14 @@ import onnx
 
 
 TARGET_TEXT = "你好呀，今天过得怎么样？如果有什么想说的，我会认真听你慢慢讲。"
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def require_chinese_bert(label: str, array: np.ndarray) -> None:
@@ -127,8 +136,16 @@ def build(args: argparse.Namespace) -> None:
     }
     manifest["asset_files"] = sorted(
         str(path.relative_to(output)).replace(os.sep, "/")
-        for path in output.rglob("*") if path.is_file()
-    )
+        for path in output.rglob("*") if path.is_file() and path.name != "manifest.json"
+    ) + ["manifest.json"]
+    manifest["asset_integrity"] = {
+        relative: {
+            "bytes": (output / relative).stat().st_size,
+            "sha256": sha256(output / relative),
+        }
+        for relative in manifest["asset_files"]
+        if relative != "manifest.json"
+    }
     (output / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
