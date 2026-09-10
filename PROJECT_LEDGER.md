@@ -20,6 +20,8 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 - 三个候选开放中英日短句与中英日固定长文本分段试听；暂不为乐奈复制 DeepSeek/模拟 LLM 真流式入口。长文本继续单 AudioTrack、无固定 200 ms 等待、播放前段时串行生成后段。
 - Genie 2.0.2 把该权重识别为标准 V2（732 音素、DPO GPT、32 kHz SoVITS），不是需要 prompt encoder 的 V2ProPlus。四个 ORT 会话与三个候选的完整 Encoder→Decoder→VITS 链均已通过桌面冒烟测试。
 - 参考越长，`ref_seq`、`ssl_content` 与 `ref_audio` 越大，主要增加固定 Encoder 输入、首次计算和内存；目标文本的自回归 Decoder/VITS 仍是主要成本。4 秒已经可用，8 秒候选只用于真机听感与 RTF 对照，不预设它一定更好。
+- 状态：公开源码位于 `agent/v072-lenai-trilingual`，草稿 PR #5；GitHub Actions 第 26 次构建的 Kotlin 编译、流式切句单测、瘦 APK 和打包工具均通过。完整 APK 共 591,454,283 字节，SHA-256 为 `7e6ddee0735fd66a4e68ebba909fb072361f7e5a0e1e39807d692e21097e955d`，ZIP、35 项乐奈资源清单及 APK v2/v3 签名验证通过，奶油条目为 0。
+- 签名边界：旧版自定义测试私钥未进入仓库，并在构建工作区清理后不可恢复；v0.7.2 改用公开、可复现的 AOSP testkey。它不能直接覆盖旧签名的 v0.7.1，同包名安装前需卸载旧版一次；后续测试版继续使用同一 AOSP testkey 即可互相覆盖。该公开测试密钥不得用于正式产品发布。
 
 ### v0.7.1 历史记录
 
