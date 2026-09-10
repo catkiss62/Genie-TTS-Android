@@ -23,7 +23,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 - 播放控制只对酒狐显示和生效：语速 0.70×–1.30×、步长 0.05×，通过 Android `PlaybackParams` time-stretch 保持音调；独立音调范围 -6–+6 半音、步长 1 半音。默认 1.00×/0 半音，恬豆固定原速原调。
 - 隔离边界：恬豆继续使用兼容旧安装的 `genie-benchmark/<manifest-version>`；酒狐使用 `genie-benchmark/voices/jiuhu/<manifest-version>`。切包时关闭旧四会话、清空当前资源根和合成结果，再加载新包，禁止跨包复用参考张量。
 - 范围：酒狐开放中英日短句、动态三语预设与三语固定长文本；DeepSeek/模拟 LLM 真流式继续只开放恬豆。
-- 状态：源码和私有酒狐 bundle 已完成；待 GitHub 编译、APK 装配、签名及最终完整性复核后补充交付记录。
+- 交付验证：公开源码位于 `agent/v074-jiuhu-trilingual-controls`，草稿 PR #7；GitHub Actions 第 31 次构建的 Kotlin 编译、流式分段单测、瘦 APK 与带完整运行库的打包工具均通过。完整测试 APK 为 622,214,139 字节，SHA-256 为 `11801a0e08a57873734149716ac056818eedaf503657855be799363969055e14`；ZIP 与 4 KiB 对齐验证通过，APK 内恬豆 44 项、酒狐 26 项资源逐项通过字节数和 SHA-256 流式复核，乐奈条目为 0。APK v2/v3 签名有效，证书 SHA-256 为 `a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc`，沿用 AOSP testkey；不合并主分支，也不发布正式 Release，下一步只需真机覆盖安装和三语/播放调节听感验证。
 
 ### v0.7.3 恬豆无声热修
 
