@@ -1,0 +1,49 @@
+name: Prepare OpenJTalk Android assets
+
+on:
+  push:
+    branches:
+      - agent/v001-genie-benchmark
+    paths:
+      - .github/workflows/prepare-openjtalk-assets.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download pinned Android library
+        run: |
+          curl -fL --retry 3 \
+            https://github.com/ayutaz/openjtalk-native/releases/download/v1.0.1/openjtalk-native-android.tar.gz \
+            -o native.tar.gz
+          echo "7805ac88c8cf3a2aa55fa9b32ce1008b53e24dea9188c6cc32dbbe87be292d1f  native.tar.gz" | sha256sum -c -
+          mkdir -p native stage/jniLibs/arm64-v8a
+          tar -xzf native.tar.gz -C native
+          find native -type f -name 'libopenjtalk_native.so' -print
+          native_so="$(find native -type f -path '*arm64-v8a*' -name 'libopenjtalk_native.so' | head -n 1)"
+          test -n "$native_so"
+          cp "$native_so" stage/jniLibs/arm64-v8a/
+
+      - name: Download pinned OpenJTalk dictionary
+        run: |
+          curl -fL --retry 3 \
+            https://github.com/r9y9/open_jtalk/releases/download/v1.11.1/open_jtalk_dic_utf_8-1.11.tar.gz \
+            -o dictionary.tar.gz
+          echo "fe6ba0e43542cef98339abdffd903e062008ea170b04e7e2a35da805902f382a  dictionary.tar.gz" | sha256sum -c -
+          mkdir -p dictionary stage/assets/openjtalk
+          tar -xzf dictionary.tar.gz -C dictionary
+          dictionary_dir="$(find dictionary -type f -name sys.dic -printf '%h\n' | head -n 1)"
+          test -n "$dictionary_dir"
+          cp -a "$dictionary_dir"/. stage/assets/openjtalk/
+          find stage -type f -printf '%p %s bytes\n' | sort
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openjtalk-android-assets
+          path: stage
+          compression-level: 6
+          if-no-files-found: error
