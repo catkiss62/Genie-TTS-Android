@@ -18,40 +18,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  relay-private-apk:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/v076-private-apk-relay'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Download exact private v0.7.6 Jiuhu APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          ASSET_ID='555859827'
-          APK='Genie-TTS-Android-v0.7.6-Jiuhu-4-candidates-test.apk'
-          EXPECTED_SIZE='649663221'
-          EXPECTED_SHA256='af90aeaf84afdb383bd71584a5512609666c9af38110ea192ebde6f2c84ceb43'
-          metadata="$(gh api "/repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}")"
-          test "$(jq -r '.name' <<<"${metadata}")" = "${APK}"
-          test "$(jq -r '.size' <<<"${metadata}")" = "${EXPECTED_SIZE}"
-          test "$(jq -r '.digest' <<<"${metadata}")" = "sha256:${EXPECTED_SHA256}"
-          gh api --method GET \
-            -H 'Accept: application/octet-stream' \
-            "/repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}" \
-            > "${APK}"
-          test "$(stat -c '%s' "${APK}")" = "${EXPECTED_SIZE}"
-          echo "${EXPECTED_SHA256}  ${APK}" | sha256sum -c -
-
-      - name: Upload one-day private APK relay artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: genie-v076-private-apk-relay
-          path: Genie-TTS-Android-v0.7.6-Jiuhu-4-candidates-test.apk
-          compression-level: 0
-          if-no-files-found: error
-          retention-days: 1
-
   compile:
     runs-on: ubuntu-latest
     timeout-minutes: 20
