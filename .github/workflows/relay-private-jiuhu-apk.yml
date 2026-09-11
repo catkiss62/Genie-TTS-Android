@@ -32,12 +32,25 @@ jobs:
             > "${APK}"
           test "$(stat -c '%s' "${APK}")" = "${EXPECTED_SIZE}"
           echo "${EXPECTED_SHA256}  ${APK}" | sha256sum -c -
+          split --bytes=350000000 --numeric-suffixes=0 --suffix-length=1 \
+            "${APK}" jiuhu-v076-apk.part-
+          test "$(stat -c '%s' jiuhu-v076-apk.part-0)" = '350000000'
+          test "$(stat -c '%s' jiuhu-v076-apk.part-1)" = '299663221'
 
-      - name: Upload one-day private APK relay artifact
+      - name: Upload one-day private APK relay part 0
         uses: actions/upload-artifact@v4
         with:
-          name: genie-v076-private-apk-relay
-          path: Genie-TTS-Android-v0.7.6-Jiuhu-4-candidates-test.apk
+          name: genie-v076-private-apk-relay-part-0
+          path: jiuhu-v076-apk.part-0
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload one-day private APK relay part 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: genie-v076-private-apk-relay-part-1
+          path: jiuhu-v076-apk.part-1
           compression-level: 0
           if-no-files-found: error
           retention-days: 1
