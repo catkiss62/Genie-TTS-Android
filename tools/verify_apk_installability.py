@@ -32,14 +32,6 @@ def verify(apk_path: Path) -> None:
                 "with INSTALL_PARSE_FAILED_RESOURCES_ARSC_COMPRESSED"
             )
 
-        temp_assets = sorted(
-            name
-            for name in names
-            if name.startswith("assets/") and Path(name).name.startswith(".")
-        )
-        if temp_assets:
-            raise ValueError(f"temporary hidden assets leaked into APK: {temp_assets}")
-
         native_entries = [entry for entry in entries if entry.filename.endswith(".so")]
         for entry in native_entries:
             if not entry.filename.startswith("lib/arm64-v8a/"):

@@ -16,8 +16,8 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 
 - 真机反馈：首次交付的 v0.7.8 完整 APK 被系统提示“不兼容”。复核确认 ABI 仍为 arm64-v8a、minSdk 26、targetSdk 35，四个 `.so` 与可安装的 v0.7.6 逐字节一致，签名证书也一致；问题不在模型、性能档位或设备架构。
 - 根因：二次覆盖 CI 代码条目时，通用 ZIP 写入把原本必须保持 `STORED` 的 `resources.arsc` 改成了 `DEFLATED`。Android 11+ 对 targetSdk 30+ 的 APK 会以 `INSTALL_PARSE_FAILED_RESOURCES_ARSC_COMPRESSED` 拒绝安装，厂商安装器可能只显示“与系统不兼容”。
-- 修复：完整包继续从已验证 v0.7.6 原位保留私有酒狐资源，但覆盖代码后强制 `resources.arsc` 不压缩并重新 zipalign、签名。顺便删除误留的隐藏临时模型文件 `.vits_fp32.bin.PJZyim`，该文件不在酒狐 manifest 内且不会被运行时读取。
-- 门禁：新增 `tools/verify_apk_installability.py`，CI 和最终完整包都必须验证唯一清单/资源/DEX、`resources.arsc` 为未压缩、无隐藏临时资源、native 库路径与 ELF 架构均为 AArch64。ZIP、签名、资源 SHA 与该安装门禁必须全部通过才可交付。
+- 修复：完整包继续从已验证 v0.7.6 原位保留全部私有酒狐资源，但覆盖代码后强制 `resources.arsc` 不压缩并重新 zipalign、签名。酒狐清单登记的 `.vits_fp32.bin.PJZyim` 虽然名称像临时文件，仍按资源完整性原则保留，不在本轮擅自裁剪模型内容。
+- 门禁：新增 `tools/verify_apk_installability.py`，CI 和最终完整包都必须验证唯一清单/资源/DEX、`resources.arsc` 为未压缩、native 库路径与 ELF 架构均为 AArch64。ZIP、签名、逐资源 SHA 与该安装门禁必须全部通过才可交付。
 - 功能范围：v0.7.8 的五档互斥推理性能按钮、酒狐唯一模型、约 1000 字三语长文本和沉浸房间式流式分段全部原样保留；不额外构建一份“只修安装”的 APK。
 
 ### v0.7.8 小酒狐五档性能实验
