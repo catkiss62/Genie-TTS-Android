@@ -4,6 +4,13 @@
 
 开发结论、测试数据、私有资源说明和后续接入清单集中记录在 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。准备移植到 AI 伴侣时直接阅读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。
 
+## v0.8.2：自动核亲和冻结对照与二阶段优化
+
+- 根据两轮真机连续报告，v0.8.1 的“自动核亲和”聚合 RTF 分别为 1.038 和 0.949，相对各轮基准 8 线程均快约 54%；v0.8.2 将这条胜出路径原样保留为第一档冻结对照，不用新实现覆盖它。
+- 四个新档全部保持 ORT 自动物理核/亲和、顺序图和线程忙等。第二档只复用自回归 Decoder 近千次调用的输入映射并预计算输出索引；后三档在此基础上分别试验 ORT `session.dynamic_block_base=2/4/8`。
+- 一键按钮按“原始自动核亲和 → Decoder 映射复用 → 动态分块 2 → 4 → 8”固定顺序运行同一份 219 字/6 段连续基准；报告全部以原始自动核亲和计算相对快慢，并继续校验逐段语义哈希和音频时长。
+- 测试仍只生成完整 PCM、不创建 `AudioTrack`；一键运行结束后可一次复制整套报告。新优化只影响测试引擎性能路径，不增加 AI 伴侣产品功能，最终只移植重复测试胜出的配置。
+
 ## v0.8.1：五档连续基准与主线程修复
 
 - 修复 v0.8.0 在后台测试线程调用 `Window.setSustainedPerformanceMode` 导致的 `CalledFromWrongThreadException`；窗口性能提示现在同步切回 Android 主线程，成功或异常后恢复原档位时也走同一路径。

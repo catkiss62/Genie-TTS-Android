@@ -222,6 +222,10 @@ class GenieBenchmarkEngine(
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             addConfigEntry("session.intra_op.allow_spinning", if (config.allowSpinning) "1" else "0")
             addConfigEntry("session.inter_op.allow_spinning", if (config.allowSpinning) "1" else "0")
+            config.dynamicBlockBase?.let {
+                // ORT's documented positive session value enables dynamic intra-op task blocks.
+                addConfigEntry("session.dynamic_block_base", it.toString())
+            }
             when (config.backend) {
                 BackendMode.CPU -> setIntraOpNumThreads(config.threads.coerceAtLeast(0))
                 BackendMode.XNNPACK -> {
@@ -328,27 +332,58 @@ class GenieBenchmarkEngine(
             val firstMs = elapsedMs(firstStart)
             encoderResult.close()
 
-            val autoregressiveStart = System.nanoTime()
             var loopIndex = 0
             var iterations = 0
             var stageOutputsIncludeStopCondition = false
-            while (loopIndex < 500) {
-                checkCancelled(shouldCancel)
-                val stageInputs = linkedMapOf<String, OnnxTensor>()
-                info.stageInputNames.forEachIndexed { index, name ->
-                    // The first decoder returns [y, y_emb, *present_key_values], while every
-                    // stage decoder call returns [y, y_emb, stop_condition, *present_key_values].
-                    // stop_condition is bool and must not be fed back into the float cache input.
-                    val outputIndex = if (stageOutputsIncludeStopCondition && index >= 2) index + 1 else index
-                    stageInputs[name] = decoderResult.get(outputIndex) as OnnxTensor
+            val autoregressiveStart: Long
+            if (config.reuseDecoderInputMap) {
+                autoregressiveStart = System.nanoTime()
+                val stageInputs = LinkedHashMap<String, OnnxTensor>(info.stageInputNames.size)
+                val initialOutputIndices = IntArray(info.stageInputNames.size) { it }
+                val recurrentOutputIndices = IntArray(info.stageInputNames.size) { index ->
+                    if (index >= 2) index + 1 else index
                 }
-                val next = stageDecoder!!.run(stageInputs)
-                decoderResult.close()
-                decoderResult = next
-                iterations += 1
-                if (tensorIsTrue(decoderResult.get(2))) break
-                stageOutputsIncludeStopCondition = true
-                loopIndex += 1
+                while (loopIndex < 500) {
+                    checkCancelled(shouldCancel)
+                    val outputIndices = if (stageOutputsIncludeStopCondition) {
+                        recurrentOutputIndices
+                    } else {
+                        initialOutputIndices
+                    }
+                    info.stageInputNames.forEachIndexed { index, name ->
+                        // The first decoder returns [y, y_emb, *present_key_values], while every
+                        // stage call inserts stop_condition before the cache outputs.
+                        stageInputs[name] = decoderResult.get(outputIndices[index]) as OnnxTensor
+                    }
+                    val next = stageDecoder!!.run(stageInputs)
+                    decoderResult.close()
+                    decoderResult = next
+                    iterations += 1
+                    if (tensorIsTrue(decoderResult.get(2))) break
+                    stageOutputsIncludeStopCondition = true
+                    loopIndex += 1
+                }
+            } else {
+                // Frozen v0.8.1 control path: keep the original allocation and index logic intact.
+                autoregressiveStart = System.nanoTime()
+                while (loopIndex < 500) {
+                    checkCancelled(shouldCancel)
+                    val stageInputs = linkedMapOf<String, OnnxTensor>()
+                    info.stageInputNames.forEachIndexed { index, name ->
+                        // The first decoder returns [y, y_emb, *present_key_values], while every
+                        // stage decoder call returns [y, y_emb, stop_condition, *present_key_values].
+                        // stop_condition is bool and must not be fed back into the float cache input.
+                        val outputIndex = if (stageOutputsIncludeStopCondition && index >= 2) index + 1 else index
+                        stageInputs[name] = decoderResult.get(outputIndex) as OnnxTensor
+                    }
+                    val next = stageDecoder!!.run(stageInputs)
+                    decoderResult.close()
+                    decoderResult = next
+                    iterations += 1
+                    if (tensorIsTrue(decoderResult.get(2))) break
+                    stageOutputsIncludeStopCondition = true
+                    loopIndex += 1
+                }
             }
             val autoregressiveMs = elapsedMs(autoregressiveStart)
 

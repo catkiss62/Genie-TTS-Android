@@ -13,8 +13,8 @@ class PerformanceComparisonReportTest {
         val report = report(entries).render()
 
         PerformanceProfile.entries.forEach { assertTrue(report.contains(it.title)) }
-        assertTrue(report.contains("1. 自动核亲和：聚合 RTF 0.700"))
-        assertTrue(report.contains("比基准快 30.0%"))
+        assertTrue(report.contains("1. Decoder映射复用：聚合 RTF 0.700"))
+        assertTrue(report.contains("比原始自动快 30.0%"))
         assertTrue(report.contains("只生成 PCM 数据，不创建 AudioTrack、不播放"))
         assertTrue(report.contains("逐段语义序列一致：是"))
         assertTrue(report.contains("纯推理对比，不是 AudioTrack underrun 实测"))
@@ -22,7 +22,7 @@ class PerformanceComparisonReportTest {
 
     @Test
     fun simulatedContinuityUsesSegmentReadyTimesWithoutPlaying() {
-        val entry = entry(PerformanceProfile.BASELINE_8, rtf = 1.0)
+        val entry = entry(PerformanceProfile.AUTO_AFFINITY_ORIGINAL, rtf = 1.0)
 
         assertEquals(listOf(500L), entry.simulatedBufferMarginsMs)
         assertEquals(500L, entry.minSimulatedBufferMarginMs)
@@ -40,8 +40,8 @@ class PerformanceComparisonReportTest {
 
     @Test
     fun reportFlagsPerSegmentSemanticMismatch() {
-        val baseline = entry(PerformanceProfile.BASELINE_8, rtf = 1.0)
-        val changed = entry(PerformanceProfile.AUTO_AFFINITY, rtf = 0.8).let { entry ->
+        val baseline = entry(PerformanceProfile.AUTO_AFFINITY_ORIGINAL, rtf = 1.0)
+        val changed = entry(PerformanceProfile.DECODER_MAP_REUSE, rtf = 0.8).let { entry ->
             entry.copy(
                 segments = entry.segments.mapIndexed { index, segment ->
                     if (index == 1) segment.copy(semanticHash = "different") else segment
@@ -57,14 +57,14 @@ class PerformanceComparisonReportTest {
     @Test
     fun failedProfileIsRecordedWithoutDroppingSuccessfulResults() {
         val failure = SingleRunPerformanceFailure(
-            PerformanceProfile.GRAPH_PARALLEL_4X2,
+            PerformanceProfile.DYNAMIC_BLOCK_4,
             sustainedPerformanceApplied = false,
             thermalBefore = "正常",
             thermalAfter = "正常",
             error = "测试异常",
         )
         val rendered = report(
-            listOf(entry(PerformanceProfile.BASELINE_8, rtf = 1.0)),
+            listOf(entry(PerformanceProfile.AUTO_AFFINITY_ORIGINAL, rtf = 1.0)),
             failures = listOf(failure),
         ).render()
         assertTrue(rendered.contains("结果：失败，但已继续测试后续档位"))
@@ -75,7 +75,7 @@ class PerformanceComparisonReportTest {
         entries: List<SingleRunPerformanceEntry>,
         failures: List<SingleRunPerformanceFailure> = emptyList(),
     ) = PerformanceComparisonReport(
-        version = "0.8.1",
+        version = "0.8.2",
         timestamp = "2026-09-21 03:00:00",
         deviceLine = "测试设备",
         voicePackageTitle = "小酒狐",

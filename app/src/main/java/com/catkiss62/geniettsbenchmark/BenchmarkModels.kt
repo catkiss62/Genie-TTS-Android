@@ -73,10 +73,16 @@ data class EngineConfig(
     val interOpThreads: Int = 1,
     val executionMode: GraphExecutionMode = GraphExecutionMode.SEQUENTIAL,
     val allowSpinning: Boolean = true,
+    val dynamicBlockBase: Int? = null,
+    val reuseDecoderInputMap: Boolean = false,
     val sustainedPerformance: Boolean = false,
     val profileId: String = "legacy",
     val profileTitle: String = "自定义",
 ) {
+    init {
+        require(dynamicBlockBase == null || dynamicBlockBase > 0) { "动态分块系数必须为正整数" }
+    }
+
     val label: String
         get() {
             val intra = if (threads == 0) "自动物理核/亲和" else "${threads}线程"
@@ -88,8 +94,11 @@ data class EngineConfig(
                 GraphExecutionMode.SEQUENTIAL -> executionMode.displayName
                 GraphExecutionMode.PARALLEL -> "${executionMode.displayName} / inter-op $interOpThreads"
             }
+            val decoderLoop = if (reuseDecoderInputMap) " · Decoder映射复用" else " · Decoder原循环"
+            val dynamicBlock = dynamicBlockBase?.let { " · 动态分块 $it" } ?: ""
             val sustained = if (sustainedPerformance) " · Android长时稳态请求" else ""
-            return "$profileTitle · $backendLabel · $graph · 线程忙等${if (allowSpinning) "开" else "关"}$sustained"
+            return "$profileTitle · $backendLabel · $graph · 线程忙等${if (allowSpinning) "开" else "关"}" +
+                "$decoderLoop$dynamicBlock$sustained"
         }
 }
 
@@ -98,42 +107,61 @@ enum class PerformanceProfile(
     val description: String,
     val config: EngineConfig,
 ) {
-    BASELINE_8(
-        "基准8线程",
-        "原 v0.7.7 路径；8 个算子内线程、顺序执行图，作为所有提速结果的对照。",
-        EngineConfig(BackendMode.CPU, 8, profileId = "baseline_8", profileTitle = "基准8线程"),
-    ),
-    AUTO_AFFINITY(
-        "自动核亲和",
-        "线程数交给 ONNX Runtime；按物理核建池并自动设置亲和，测试异构 CPU 调度收益。",
-        EngineConfig(BackendMode.CPU, 0, profileId = "auto_affinity", profileTitle = "自动核亲和"),
-    ),
-    BALANCED_6(
-        "均衡6线程",
-        "限制为 6 个算子内线程，测试减少小核竞争和内存带宽争用能否反而提速。",
-        EngineConfig(BackendMode.CPU, 6, profileId = "balanced_6", profileTitle = "均衡6线程"),
-    ),
-    GRAPH_PARALLEL_4X2(
-        "图并行4×2",
-        "每个算子最多 4 线程，同时允许 2 路图节点并行；只适合存在可并行分支的 ONNX 图。",
+    AUTO_AFFINITY_ORIGINAL(
+        "原始自动核亲和",
+        "完整保留 v0.8.1 胜出路径：ORT 自动物理核/亲和、顺序图、忙等开启和原 Decoder 循环。",
         EngineConfig(
             BackendMode.CPU,
-            4,
-            interOpThreads = 2,
-            executionMode = GraphExecutionMode.PARALLEL,
-            profileId = "graph_parallel_4x2",
-            profileTitle = "图并行4×2",
+            0,
+            profileId = "auto_affinity_original",
+            profileTitle = "原始自动核亲和",
         ),
     ),
-    SUSTAINED_8(
-        "长时稳态8",
-        "保持 8 线程顺序图，并在设备支持时请求 Android 持续性能模式；关注长文本后半程而非峰值。",
+    DECODER_MAP_REUSE(
+        "Decoder映射复用",
+        "保持原始自动核亲和，只复用近千次自回归调用的输入映射并预计算输出索引。",
         EngineConfig(
             BackendMode.CPU,
-            8,
-            sustainedPerformance = true,
-            profileId = "sustained_8",
-            profileTitle = "长时稳态8",
+            0,
+            reuseDecoderInputMap = true,
+            profileId = "decoder_map_reuse",
+            profileTitle = "Decoder映射复用",
+        ),
+    ),
+    DYNAMIC_BLOCK_2(
+        "动态分块2",
+        "在 Decoder 映射复用上启用 ORT 动态任务分块系数 2，测试异构核心负载尾部。",
+        EngineConfig(
+            BackendMode.CPU,
+            0,
+            dynamicBlockBase = 2,
+            reuseDecoderInputMap = true,
+            profileId = "dynamic_block_2",
+            profileTitle = "动态分块2",
+        ),
+    ),
+    DYNAMIC_BLOCK_4(
+        "动态分块4",
+        "在 Decoder 映射复用上启用 ORT 动态任务分块系数 4；官方以 4 作为典型试验值。",
+        EngineConfig(
+            BackendMode.CPU,
+            0,
+            dynamicBlockBase = 4,
+            reuseDecoderInputMap = true,
+            profileId = "dynamic_block_4",
+            profileTitle = "动态分块4",
+        ),
+    ),
+    DYNAMIC_BLOCK_8(
+        "动态分块8",
+        "在 Decoder 映射复用上启用更细的 ORT 动态任务分块系数 8，检验收益是否继续扩大。",
+        EngineConfig(
+            BackendMode.CPU,
+            0,
+            dynamicBlockBase = 8,
+            reuseDecoderInputMap = true,
+            profileId = "dynamic_block_8",
+            profileTitle = "动态分块8",
         ),
     ),
 }
@@ -245,7 +273,7 @@ data class BenchmarkResult(
     val playbackGainDb: Double, val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android 小酒狐三语测试 v0.8.1")
+        appendLine("Genie-TTS Android 小酒狐三语测试 v0.8.2")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
         appendLine("语言前端：$featureModeTitle")

@@ -14,34 +14,26 @@ class PerformanceProfileTest {
     }
 
     @Test
-    fun baselinePreservesThePreviousEightThreadSequentialPath() {
-        val config = PerformanceProfile.BASELINE_8.config
+    fun originalAutoAffinityPreservesTheV081Winner() {
+        val config = PerformanceProfile.AUTO_AFFINITY_ORIGINAL.config
         assertEquals(BackendMode.CPU, config.backend)
-        assertEquals(8, config.threads)
+        assertEquals(0, config.threads)
         assertEquals(1, config.interOpThreads)
         assertEquals(GraphExecutionMode.SEQUENTIAL, config.executionMode)
         assertTrue(config.allowSpinning)
+        assertEquals(null, config.dynamicBlockBase)
+        assertFalse(config.reuseDecoderInputMap)
         assertFalse(config.sustainedPerformance)
     }
 
     @Test
-    fun automaticAffinityLeavesThreadCountToOrt() {
-        val config = PerformanceProfile.AUTO_AFFINITY.config
-        assertEquals(0, config.threads)
-        assertTrue(config.label.contains("自动物理核/亲和"))
-    }
-
-    @Test
-    fun graphParallelAndSustainedModesDoNotOverlap() {
-        val parallel = PerformanceProfile.GRAPH_PARALLEL_4X2.config
-        assertEquals(4, parallel.threads)
-        assertEquals(2, parallel.interOpThreads)
-        assertEquals(GraphExecutionMode.PARALLEL, parallel.executionMode)
-        assertFalse(parallel.sustainedPerformance)
-
-        val sustained = PerformanceProfile.SUSTAINED_8.config
-        assertEquals(GraphExecutionMode.SEQUENTIAL, sustained.executionMode)
-        assertTrue(sustained.sustainedPerformance)
-        assertEquals(1, PerformanceProfile.entries.count { it.config.sustainedPerformance })
+    fun optimizedProfilesKeepAutoAffinityAndOnlyChangeDeclaredKnobs() {
+        val optimized = PerformanceProfile.entries.drop(1)
+        assertTrue(optimized.all { it.config.threads == 0 })
+        assertTrue(optimized.all { it.config.executionMode == GraphExecutionMode.SEQUENTIAL })
+        assertTrue(optimized.all { it.config.allowSpinning })
+        assertTrue(optimized.all { it.config.reuseDecoderInputMap })
+        assertEquals(listOf(null, 2, 4, 8), optimized.map { it.config.dynamicBlockBase })
+        assertTrue(PerformanceProfile.entries.none { it.config.sustainedPerformance })
     }
 }

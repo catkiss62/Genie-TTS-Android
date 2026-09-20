@@ -144,11 +144,11 @@ data class PerformanceComparisonReport(
     }
 
     fun render(): String = buildString {
-        appendLine("===== Genie-TTS v$version 小酒狐五档连续性能对比 · $timestamp =====")
+        appendLine("===== Genie-TTS v$version 小酒狐自动核亲和优化对比 · $timestamp =====")
         appendLine(deviceLine)
         appendLine("模式：每档一次独立冷加载 + 同一段中文的连续分段推理；只生成 PCM 数据，不创建 AudioTrack、不播放。")
         appendLine("连续性：根据各段完成时刻与已生成音频时长估算缓冲余量；这是纯推理对比，不是 AudioTrack underrun 实测。")
-        appendLine("公平性：同一语音包、同一参考音色、同一文本与分段；语速、音调、高频柔化和播放增益均不参与。")
+        appendLine("公平性：原始自动核亲和完整保留为对照；所有档位共用同一语音包、参考音色、文本与分段，语速、音调、高频柔化和播放增益均不参与。")
         val entryByProfile = entries.associateBy { it.profile }
         val failureByProfile = failures.associateBy { it.profile }
         val attemptedProfiles = PerformanceProfile.entries.filter { it in entryByProfile || it in failureByProfile }
@@ -202,18 +202,18 @@ data class PerformanceComparisonReport(
             }
         }
 
-        val baseline = entries.firstOrNull { it.profile == PerformanceProfile.BASELINE_8 }
+        val baseline = entries.firstOrNull { it.profile == PerformanceProfile.AUTO_AFFINITY_ORIGINAL }
         val ranked = entries.sortedBy { it.coreRtf }
         appendLine("\n===== 横向汇总（成功档位按聚合 RTF 从快到慢） =====")
         ranked.forEachIndexed { index, entry ->
             val relative = baseline?.let { baselineEntry ->
-                if (entry.profile == PerformanceProfile.BASELINE_8 || baselineEntry.coreRtf <= 0.0) {
-                    "基准"
+                if (entry.profile == PerformanceProfile.AUTO_AFFINITY_ORIGINAL || baselineEntry.coreRtf <= 0.0) {
+                    "原始自动基准"
                 } else {
                     val faster = (baselineEntry.coreRtf - entry.coreRtf) / baselineEntry.coreRtf * 100.0
-                    if (faster >= 0.0) "比基准快 ${decimal(faster, 1)}%" else "比基准慢 ${decimal(-faster, 1)}%"
+                    if (faster >= 0.0) "比原始自动快 ${decimal(faster, 1)}%" else "比原始自动慢 ${decimal(-faster, 1)}%"
                 }
-            } ?: "无基准"
+            } ?: "缺少原始自动基准"
             appendLine(
                 "${index + 1}. ${entry.profile.title}：聚合 RTF ${decimal(entry.coreRtf, 3)} · " +
                     "核心 ${entry.totalInferenceMs} ms · 连续生成 ${entry.generationWallMs} ms · " +
@@ -233,7 +233,7 @@ data class PerformanceComparisonReport(
             appendLine("峰值 PSS：约 ${entries.maxOf { it.pssMb }} MB")
         }
         appendLine("成功/失败：${entries.size}/${failures.size}")
-        appendLine("说明：连续单次结果仍会受温控、系统后台和固定测试顺序影响；用于筛选候选档，最快两档应再重复确认。")
+        appendLine("说明：连续单次结果仍会受温控、系统后台和固定测试顺序影响；原始自动档是冻结对照，新优化档中最快两档应再重复确认。")
     }
 
     private fun decimal(value: Double, digits: Int): String =
