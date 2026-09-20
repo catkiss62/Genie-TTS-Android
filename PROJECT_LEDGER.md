@@ -19,6 +19,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 - 新优化档：`Decoder映射复用` 只消除自回归循环内反复创建输入 `LinkedHashMap` 与重复计算输出索引；`动态分块2/4/8` 在映射复用上分别加入 ORT `session.dynamic_block_base` 正整数试验。五档的模型、参考张量、文本、分段、采样和 PCM 输出路径保持一致。
 - 一键对比：固定运行“原始自动核亲和 → Decoder映射复用 → 动态分块2 → 动态分块4 → 动态分块8”，每档独立冷加载、连续生成同一 219 字/6 段中文基准且不播放；结束后一个按钮复制整套报告，逐段 token/哈希与音频时长继续作为正确性门禁。
 - 范围边界：本轮只继续优化最终将移植到 AI 伴侣的推理路径，不新增测试项目专属产品功能；最终默认配置必须由新 APK 至少两轮真机结果决定。
+- 验证与交付：针对性 Kotlin/JUnit 7 项通过；公开分支 `agent/v082-auto-affinity-ab-optimization`、草稿 PR #14、首个远端源码提交 `1dc5f40`。GitHub Actions 第 47 次运行的打包工具语法、Android/Kotlin 编译、全量单测、瘦 APK、安装兼容门禁和两份构建产物上传全部通过。完整 APK `Genie-TTS-Android-v0.8.2-auto-affinity-optimization-test.apk` 为 355,798,671 字节，SHA-256 `355cacb1762bf19f2f530fd656a07008ec06845c6fc6bb6bd49860ab93a75a5f`；15 个 CI 非 META 代码条目逐字节一致，51 个 v0.8.1 基础条目保持一致，49 个酒狐资源条目齐全，恬豆/乐奈/mao/旧 `benchmark` 条目为 0。ZIP、未压缩 `resources.arsc`、AArch64 ELF、4 字节/16 KiB zipalign、v2/v3 签名与证书 `a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc` 全部通过；APK 已上传到仓库既有的未发布草稿页。未合并 `main`，未发布正式 Release。
 
 ### v0.8.1 五档连续性能对比与主线程修复
 
