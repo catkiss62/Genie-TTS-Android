@@ -29,6 +29,18 @@ class StreamingDialogueSegmenterTest {
     }
 
     @Test
+    fun ordinaryCommaDoesNotCutBeforeACompleteSentence() {
+        val segmenter = StreamingDialogueSegmenter(DialogueLanguage.CHINESE)
+        val firstHalf = "这是一句超过旧首段目标的普通内容，仍然应该等待句号"
+
+        assertTrue(segmenter.addDelta(firstHalf).isEmpty())
+        assertEquals(
+            listOf("$firstHalf。"),
+            segmenter.addDelta("。").map { it.text },
+        )
+    }
+
+    @Test
     fun finalResidualTextIsFlushed() {
         val segmenter = StreamingDialogueSegmenter(DialogueLanguage.ENGLISH)
         assertTrue(segmenter.addDelta("A short final phrase without punctuation").isEmpty())
@@ -73,5 +85,17 @@ class StreamingDialogueSegmenterTest {
 
         assertEquals("A short sentence. Another short sentence.", packed.text)
         assertEquals(2, packed.sourceUnits)
+    }
+
+    @Test
+    fun immersiveLongTextPlannerKeepsFirstSentenceImmediate() {
+        val segments = ImmersiveLongTextPlanner.split(
+            "第一句。第二句。第三句。第四句。",
+            DialogueLanguage.CHINESE,
+        )
+
+        assertEquals("第一句。", segments.first())
+        assertEquals("第二句。第三句。第四句。", segments[1])
+        assertTrue(segments.all { it.length <= DialogueLanguage.CHINESE.maxChars })
     }
 }

@@ -1,7 +1,7 @@
 package com.catkiss62.geniettsbenchmark
 
 /**
- * Stable names for the reference-audio profiles contained in the private benchmark bundle.
+ * Stable names for the four Jiuhu reference-audio profiles in the private benchmark bundle.
  *
  * Keep [id] aligned with manifest.json. The AI companion should migrate only entries whose
  * [includeInCompanion] is true; the test-only backup remains here for later comparison without
@@ -17,11 +17,10 @@ data class VoiceProfileDefinition(
 
 object VoiceProfileCatalog {
     val profiles = listOf(
-        VoiceProfileDefinition("ref01", "daily", "日常认真（主音色）", "正常、认真与无法判断时的稳定默认", true),
-        VoiceProfileDefinition("ref02", "gentle", "温柔轻声", "安慰、平静、担心与低强度亲密表达", true),
-        VoiceProfileDefinition("ref04", "lively", "活泼可爱", "高兴、兴奋与惊讶", true),
-        VoiceProfileDefinition("ref06", "cute", "日常可爱", "调皮、无奈与慌张", true),
-        VoiceProfileDefinition("ref07", "test_backup", "备选音色（仅测试项目）", "保留作未来对照，默认不移植", false),
+        VoiceProfileDefinition("jiuhu_idle50", "lively", "原始参考（活泼）", "活泼、兴奋与高能量表达", true),
+        VoiceProfileDefinition("jiuhu_bento_tools", "daily", "便当与备用工具（日常）", "日常对话与无法判断时的默认", true),
+        VoiceProfileDefinition("jiuhu_dream_days", "gentle", "如梦的日子（温柔）", "安慰、平静、担心与低强度亲密表达", true),
+        VoiceProfileDefinition("jiuhu_devotion", "cute", "献给主人（可爱）", "调皮、无奈与偏可爱的表达", true),
     )
 
     private val byId = profiles.associateBy { it.id }

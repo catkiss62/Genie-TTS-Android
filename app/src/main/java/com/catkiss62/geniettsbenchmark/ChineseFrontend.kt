@@ -13,6 +13,8 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
     private val env = OrtEnvironment.getEnvironment()
     private var robertaSession: OrtSession? = null
     private var robertaPath: String? = null
+    private var engineConfig = PerformanceProfile.BASELINE_8.config
+    private var robertaConfig: EngineConfig? = null
     private var vocab: Map<String, Long>? = null
     private var charPhones: Map<String, List<LongArray>>? = null
     private var phrasePhones: Map<String, List<LongArray>>? = null
@@ -23,10 +25,18 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
 
     fun clearPreparedCache() = synchronized(cache) { cache.clear() }
 
+    fun configure(config: EngineConfig) {
+        if (engineConfig == config) return
+        closeModel()
+        clearPreparedCache()
+        engineConfig = config
+    }
+
     fun closeModel() {
         robertaSession?.close()
         robertaSession = null
         robertaPath = null
+        robertaConfig = null
     }
 
     override fun close() = closeModel()
@@ -345,11 +355,19 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
 
     private fun runRoberta(root: File, info: FrontendSpec, tokenIds: LongArray): FloatArray {
         val modelPath = engine.frontendModelFile(root).absolutePath
-        if (robertaSession == null || robertaPath != modelPath) {
+        if (robertaSession == null || robertaPath != modelPath || robertaConfig != engineConfig) {
             closeModel()
             val options = OrtSession.SessionOptions().apply {
-                setInterOpNumThreads(1)
-                setIntraOpNumThreads(max(1, Runtime.getRuntime().availableProcessors()))
+                setInterOpNumThreads(max(1, engineConfig.interOpThreads))
+                setIntraOpNumThreads(engineConfig.threads.coerceAtLeast(0))
+                setExecutionMode(
+                    when (engineConfig.executionMode) {
+                        GraphExecutionMode.SEQUENTIAL -> OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL
+                        GraphExecutionMode.PARALLEL -> OrtSession.SessionOptions.ExecutionMode.PARALLEL
+                    }
+                )
+                addConfigEntry("session.intra_op.allow_spinning", if (engineConfig.allowSpinning) "1" else "0")
+                addConfigEntry("session.inter_op.allow_spinning", if (engineConfig.allowSpinning) "1" else "0")
                 setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             }
             robertaSession = try {
@@ -358,6 +376,7 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
                 options.close()
             }
             robertaPath = modelPath
+            robertaConfig = engineConfig
         }
         val ortSession = checkNotNull(robertaSession)
         val shape = longArrayOf(1, tokenIds.size.toLong())

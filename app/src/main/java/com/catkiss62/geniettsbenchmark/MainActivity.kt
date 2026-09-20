@@ -51,33 +51,21 @@ class MainActivity : Activity() {
             318, 254, 322, 126, 222, 254, 323, 248, 160, 229, 322, 158, 96, 227, 96,
             251, 160, 251, 160, 225, 96, 251, 229, 323, 229, 3,
         )
-        private val LONG_STREAM_TEXT_ZH = """
-            刚才安静下来的时候，我突然想到了一件很有意思的事。我们每天都会遇到很多细小的瞬间，有些当时觉得普通，过一会儿再想，却会发现它们其实很值得记住。比如路边刚亮起来的灯，窗外突然吹过的一阵风，或者一句没有准备、却刚好让人笑出来的话。
-            如果把这些事情都认真收集起来，也许普通的一天就会变得很不一样。我想先把今天发生的事情慢慢讲给你听，然后再听听你的版本。你不需要一次说完，想到哪里就说到哪里；就算中途停下来也没关系，我会顺着刚才的话继续等你。
-            要是以后我们积攒了很多这样的片段，我希望偶尔能把它们重新翻出来。也许是一次没有结果的争论，也许是半夜突然聊到的怪问题，也可能只是你随口说过喜欢某种味道。过了很久再提起来，应该会有一种原来我们已经一起走了这么远的感觉。
-            不过现在先不想那么远。你今天有没有遇到什么想吐槽的事情？开心的、离谱的、无聊的都可以。如果实在想不到，也可以从现在最想吃什么开始。反正话题不用特别郑重，我们可以一边乱聊，一边看它最后会跑到哪里去。
-            我已经准备好认真听了，但也不保证一直老老实实。要是发现哪里特别好玩，我可能会忍不住插一句；要是你故意卖关子，我也可能追着问到底。总之，接下来的时间不用赶，我们慢慢说。
-        """.trimIndent().replace("\n", "")
-        private val LONG_STREAM_TEXT_EN = """
-            When the room became quiet, I remembered a small moment from earlier today. Nothing dramatic happened, but afternoon light reached the window at just the right angle, and everything looked calm and warm. I wanted to tell you before the memory faded. We often forget ordinary details, even though they can make a difficult day feel softer: a distant song, a warm cup of tea, or a message arriving at the perfect time. If you want, tell me one small thing you noticed today. It need not be important. We can begin there and take our time.
-        """.trimIndent().replace("\n", " ")
-        private val LONG_STREAM_TEXT_JA = """
-            部屋が静かになったとき、今日あった小さな出来事を思い出しました。特別な事件ではないけれど、午後の光がちょうど窓から差し込んで、ほんの少しだけ部屋が暖かく見えたんです。その瞬間を忘れる前に、あなたに話しておきたいと思いました。毎日の中には、気づいてもすぐに忘れてしまうことがたくさんあります。でも、遠くから聞こえた音楽や、まだ温かかったお茶や、ちょうどいいタイミングで届いた言葉みたいに、小さなものが一日を優しくしてくれることもあります。もしよかったら、あなたが今日見つけた小さなことも教えてください。面白い話でなくても、立派な話でなくても大丈夫です。思いついたところから始めて、途中で話題が変わっても気にしないでください。急いで結論を出す必要はありません。私はここで、あなたの言葉をゆっくり聞いています。そして、話し終わったあとに少し笑えたなら、それだけで今日は十分にいい時間だったと思います。明日の予定がまだ決まっていなくても、心配はいりません。今は目の前の時間を大切にして、気になったことを一つずつ話していきましょう。言葉がすぐに見つからないときは、少し黙って考えても大丈夫です。静かな時間も会話の一部です。あなたのペースで進めばいいんです。
-        """.trimIndent().replace("\n", "")
     }
 
-    private enum class LongStreamLanguage(val title: String) {
-        CHINESE("中文"),
-        ENGLISH("英文"),
-        JAPANESE("日文"),
+    private enum class LongStreamLanguage(
+        val title: String,
+        val dialogueLanguage: DialogueLanguage,
+    ) {
+        CHINESE("中文", DialogueLanguage.CHINESE),
+        ENGLISH("英文", DialogueLanguage.ENGLISH),
+        JAPANESE("日文", DialogueLanguage.JAPANESE),
     }
 
-    private data class LongStreamTest(
-        val language: LongStreamLanguage,
-        val text: String,
-        val targetChars: Int,
-        val maxChars: Int,
-    )
+    private data class LongStreamTest(val language: LongStreamLanguage) {
+        val text: String
+            get() = DialogueFixtures.text(language.dialogueLanguage, DialogueLengthMode.LONG)
+    }
 
     private data class TargetState(
         val id: String,
@@ -140,6 +128,8 @@ class MainActivity : Activity() {
     private lateinit var progress: ProgressBar
     private lateinit var buttons: LinearLayout
     private lateinit var voicePackageSelector: Spinner
+    private lateinit var performanceProfilePanel: LinearLayout
+    private lateinit var performanceProfileDescription: TextView
     private lateinit var playbackTuningPanel: LinearLayout
     private lateinit var playbackSpeedLabel: TextView
     private lateinit var playbackPitchLabel: TextView
@@ -159,7 +149,9 @@ class MainActivity : Activity() {
     private lateinit var stopButton: Button
     private lateinit var pageScroll: ScrollView
     private val worker = Executors.newSingleThreadExecutor()
-    private val config = EngineConfig(BackendMode.CPU, 8)
+    private var currentPerformanceProfile = PerformanceProfile.BASELINE_8
+    private var config = currentPerformanceProfile.config
+    private val performanceProfileButtons = linkedMapOf<PerformanceProfile, Button>()
     private var currentVoicePackage = VoicePackageCatalog.all.first()
     private var jiuhuPlaybackSpeed = 1.0f
     private var jiuhuPitchSemitones = 0
@@ -174,6 +166,7 @@ class MainActivity : Activity() {
     private var longStreamReportLabel = "无"
     private var dialogueReport = ""
     private var dialogueReportLabel = "无"
+    private var retiredTiandouCleanupReport = "正在后台检查旧恬豆缓存"
     private lateinit var apiKeyStore: SecureApiKeyStore
     @Volatile private var activeStream: StreamingAudioPlayer? = null
     @Volatile private var activeDeepSeekClient: DeepSeekStreamClient? = null
@@ -193,6 +186,25 @@ class MainActivity : Activity() {
         apiKeyStore = SecureApiKeyStore(this)
         setContentView(buildUi())
         showInitialState()
+        cleanupRetiredTiandouAssetsAsync()
+    }
+
+    private fun cleanupRetiredTiandouAssetsAsync() {
+        worker.execute {
+            val result = runCatching {
+                RetiredVoiceAssetCleaner.removeTiandou(
+                    filesDir,
+                    File(engine.readManifest().frontend.roberta).name,
+                )
+            }
+            retiredTiandouCleanupReport = result.fold(
+                onSuccess = { removed ->
+                    if (removed.isEmpty()) "未发现旧恬豆缓存" else "已删除 ${removed.size} 个旧恬豆资源目录"
+                },
+                onFailure = { "清理失败：${it.message ?: it.javaClass.simpleName}" },
+            )
+            runOnUiThread { showCurrent() }
+        }
     }
 
     private fun buildUi(): View {
@@ -202,13 +214,13 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         content.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n双音色 Android 三语联调 v0.7.6"
+            text = "Genie-TTS v2.0.2\n小酒狐 Android 三语性能联调 v0.7.8"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         content.addView(TextView(this).apply {
-            text = "恬豆 V2 + 小酒狐 V2Pro · 中英日三语 · CPU 8线程"
+            text = "小酒狐 V2Pro 四候选 · 中英日三语 · 五档互斥性能实验"
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(6))
@@ -220,6 +232,8 @@ class MainActivity : Activity() {
         })
         voicePackageSelector = Spinner(this)
         content.addView(voicePackageSelector, LinearLayout.LayoutParams(-1, dp(48)))
+        performanceProfilePanel = buildPerformanceProfilePanel()
+        content.addView(performanceProfilePanel, LinearLayout.LayoutParams(-1, -2))
         playbackTuningPanel = buildPlaybackTuningPanel()
         content.addView(playbackTuningPanel, LinearLayout.LayoutParams(-1, -2))
         updatePlaybackTuningUi(false)
@@ -285,6 +299,104 @@ class MainActivity : Activity() {
         }
         return pageScroll
     }
+
+    private fun buildPerformanceProfilePanel(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(0, dp(4), 0, dp(8))
+        addView(TextView(this@MainActivity).apply {
+            text = "推理性能档（互斥，切换后重载模型）"
+            textSize = 13f
+            setTextColor(Color.rgb(50, 37, 86))
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        })
+        PerformanceProfile.entries.chunked(2).forEach { profiles ->
+            val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
+            profiles.forEach { profile ->
+                val button = Button(this@MainActivity).apply {
+                    isAllCaps = false
+                    gravity = Gravity.CENTER
+                    setOnClickListener { applyPerformanceProfile(profile) }
+                }
+                performanceProfileButtons[profile] = button
+                row.addView(button, LinearLayout.LayoutParams(0, dp(46), 1f))
+            }
+            if (profiles.size == 1) {
+                row.addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(46), 1f))
+            }
+            addView(row, LinearLayout.LayoutParams(-1, dp(50)))
+        }
+        performanceProfileDescription = TextView(this@MainActivity).apply {
+            textSize = 11f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, 0, 0, dp(4))
+        }
+        addView(performanceProfileDescription)
+        addView(TextView(this@MainActivity).apply {
+            text = "这些档位只调 ONNX Runtime 调度与 Android 长时性能提示，不改变模型、参考张量、采样参数或音频后处理。"
+            textSize = 11f
+            setTextColor(Color.GRAY)
+        })
+        updatePerformanceProfileUi()
+    }
+
+    private fun applyPerformanceProfile(profile: PerformanceProfile) {
+        if (profile == currentPerformanceProfile) {
+            return showCurrent("当前已经是“${profile.title}”，未重复重载模型。")
+        }
+        engine.stopPlayback()
+        engine.unloadModels()
+        currentPerformanceProfile = profile
+        config = profile.config
+        frontend.configure(config)
+        val sustainedApplied = setSustainedPerformanceMode(profile.config.sustainedPerformance)
+        lastResult = null
+        lastResultLabel = null
+        lastResultReport = ""
+        diagnosticReport = ""
+        longStreamReport = ""
+        longStreamReportLabel = "无"
+        dialogueReport = ""
+        dialogueReportLabel = "无"
+        updatePerformanceProfileUi()
+        val sustainedNote = if (profile.config.sustainedPerformance && !sustainedApplied) {
+            "；本机未声明支持 Android 持续性能模式，该项自动回退为普通调度"
+        } else {
+            ""
+        }
+        showCurrent("已切换到“${profile.title}”；四个 TTS 会话和中文 RoBERTa 将在下次测试时按新档位重建$sustainedNote。")
+    }
+
+    private fun updatePerformanceProfileUi() {
+        performanceProfileButtons.forEach { (profile, button) ->
+            button.text = if (profile == currentPerformanceProfile) "✓ ${profile.title}" else profile.title
+            button.alpha = if (profile == currentPerformanceProfile) 1.0f else 0.78f
+        }
+        if (::performanceProfileDescription.isInitialized) {
+            performanceProfileDescription.text = buildString {
+                append("当前：${currentPerformanceProfile.title}。${currentPerformanceProfile.description}")
+                append("\n${config.label}")
+                append("\nAndroid 持续性能模式：${sustainedPerformanceStatus()}")
+            }
+        }
+    }
+
+    private fun sustainedPerformanceSupported(): Boolean =
+        (getSystemService(POWER_SERVICE) as PowerManager).isSustainedPerformanceModeSupported
+
+    private fun setSustainedPerformanceMode(requested: Boolean): Boolean {
+        val applied = requested && sustainedPerformanceSupported()
+        window.setSustainedPerformanceMode(applied)
+        return applied
+    }
+
+    private fun sustainedPerformanceStatus(): String = when {
+        !sustainedPerformanceSupported() -> "本机不支持"
+        config.sustainedPerformance -> "已请求启用"
+        else -> "支持但当前关闭"
+    }
+
+    private fun performanceReportLine(): String =
+        "性能档：${config.label}\nAndroid 持续性能模式：${sustainedPerformanceStatus()}\n"
 
     private fun buildPlaybackTuningPanel(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -446,14 +558,14 @@ class MainActivity : Activity() {
             }
             addButton("播放上次合成结果") { playLastGenerated() }
             addButton("复制上次合成报告") { copyLastResultReport() }
-            addButton("中文约 500 字长文本试听") {
-                runLongStreamTest(LongStreamTest(LongStreamLanguage.CHINESE, LONG_STREAM_TEXT_ZH, 42, 54))
+            addButton("小酒狐中文约 1000 字长文本试听") {
+                runLongStreamTest(LongStreamTest(LongStreamLanguage.CHINESE))
             }
-            addButton("英文约 500 字符长文本试听") {
-                runLongStreamTest(LongStreamTest(LongStreamLanguage.ENGLISH, LONG_STREAM_TEXT_EN, 88, 110))
+            addButton("小酒狐英文约 1000 字符长文本试听") {
+                runLongStreamTest(LongStreamTest(LongStreamLanguage.ENGLISH))
             }
-            addButton("日文约 500 字符长文本试听") {
-                runLongStreamTest(LongStreamTest(LongStreamLanguage.JAPANESE, LONG_STREAM_TEXT_JA, 42, 54))
+            addButton("小酒狐日文约 1000 字符长文本试听") {
+                runLongStreamTest(LongStreamTest(LongStreamLanguage.JAPANESE))
             }
             addButton("复制上一次长文本报告") { copyLongStreamReport() }
 
@@ -630,7 +742,7 @@ class MainActivity : Activity() {
         currentVoicePackage = selected
         updatePlaybackTuningUi(false)
         engine = GenieBenchmarkEngine(this, selected.assetNamespace, selected.id)
-        frontend = ChineseFrontend(engine)
+        frontend = ChineseFrontend(engine).also { it.configure(config) }
         preparedRoot = null
         selectedPreset = engine.readManifest().presets.first()
         selector.adapter = ArrayAdapter(
@@ -662,6 +774,9 @@ class MainActivity : Activity() {
             val runtimePreset = selectedRuntimePreset()
             appendLine(deviceLine())
             appendLine("当前语音包：${currentVoicePackage.title}")
+            appendLine("当前性能档：${config.label}")
+            appendLine("Android 持续性能模式：${sustainedPerformanceStatus()}")
+            appendLine("旧资源清理：$retiredTiandouCleanupReport")
             val voiceProfile = VoiceProfileCatalog.resolve(item.id)
             appendLine("当前音色：${item.displayTitle}")
             if (currentVoicePackage.supportsPlaybackTuning) {
@@ -713,7 +828,7 @@ class MainActivity : Activity() {
         val result = generate(item, target, requestStartedNs = started)
         lastResult = result
         lastResultLabel = "${item.displayTitle} · ${target.title}"
-        lastResultReport = result.report(deviceLine()) + playbackTuningReportLine()
+        lastResultReport = result.report(deviceLine()) + performanceReportLine() + playbackTuningReportLine()
         val playbackStarted = engine.play(
             result.audio,
             engine.readManifest().sampleRate,
@@ -758,7 +873,7 @@ class MainActivity : Activity() {
         )
         lastResult = result
         lastResultLabel = "${item.displayTitle} · ${test.title}"
-        lastResultReport = result.report(deviceLine()) + playbackTuningReportLine()
+        lastResultReport = result.report(deviceLine()) + performanceReportLine() + playbackTuningReportLine()
         val playbackStarted = engine.play(
             result.audio,
             engine.readManifest().sampleRate,
@@ -821,6 +936,7 @@ class MainActivity : Activity() {
         lastResultLabel = "${item.displayTitle} · ${preset.displayLabel}"
         lastResultReport = buildString {
             append(result.report(deviceLine()))
+            append(performanceReportLine())
             append(playbackTuningReportLine())
             appendLine("含义/测试目的：${preset.translation}")
             appendLine("动态前端校验：$goldenDiagnostic")
@@ -867,7 +983,7 @@ class MainActivity : Activity() {
         engine.stopPlayback()
         val item = currentCase()
         val playbackTuning = currentPlaybackTuning()
-        val segments = ChineseTextSegmenter.split(test.text, test.targetChars, test.maxChars)
+        val segments = ImmersiveLongTextPlanner.split(test.text, test.language.dialogueLanguage)
         val testStartedNs = System.nanoTime()
         val thermalAtStart = thermalStatus()
         val runs = ArrayList<StreamSegmentRun>(segments.size)
@@ -961,14 +1077,15 @@ class MainActivity : Activity() {
             val thermalAtEnd = thermalStatus()
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.7.6 ${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.8 小酒狐${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.displayTitle} · ${config.label}")
+                appendLine("Android 持续性能模式：${sustainedPerformanceStatus()}")
                 if (currentVoicePackage.supportsPlaybackTuning) {
                     append(playbackTuningReportLine(playbackTuning))
                 }
                 appendLine("语言：${test.language.title} · 原文：${test.text.length} 字符 · ${segments.size} 段 · 单段最长 ${segments.maxOf { it.length }} 字符")
-                appendLine("策略：首段固定预填充 1000 ms；单 AudioTrack 连续 PCM、无固定段间等待；播放前段时按顺序生成后段；采样参数未修改。")
+                appendLine("策略：与 AI 伴侣沉浸房间一致——完整句闭合即入队、首句立即合成、仅拼合已积压后句，中日 54/英文 110 字安全上限；首段预填充 1000 ms；单 AudioTrack 连续 PCM、无固定段间等待。")
                 appendLine("温控状态：开始 $thermalAtStart · 结束 $thermalAtEnd")
                 appendLine("首段开播等待：$firstAudioWaitMs ms")
                 appendLine("全部分段生成完成：$generationWallMs ms")
@@ -1024,13 +1141,13 @@ class MainActivity : Activity() {
     private fun copyDialogueReport() {
         if (dialogueReport.isBlank()) return showCurrent("请先完成或中断一次流式联调测试。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.7.6", dialogueReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.7.8", dialogueReport))
         showCurrent("上一次流式联调报告已复制：$dialogueReportLabel")
     }
 
     private fun runDialogueStream(source: DialogueStreamSource) {
         if (!currentVoicePackage.supportsDialogueStreaming) {
-            return showCurrent("DeepSeek / 模拟真流式本轮只用于恬豆；小酒狐用于三语短句和固定长文本分段试听。")
+            return showCurrent("当前语音包没有开放 DeepSeek / 模拟真流式测试。")
         }
         val language = DialogueLanguage.entries[
             dialogueLanguageSelector.selectedItemPosition.coerceIn(DialogueLanguage.entries.indices)
@@ -1316,10 +1433,11 @@ class MainActivity : Activity() {
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
 
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.7.6 流式对话联调报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.8 小酒狐流式对话联调报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
                 appendLine("音色：${item.displayTitle} · ${config.label}")
+                appendLine("Android 持续性能模式：${sustainedPerformanceStatus()}")
                 if (currentVoicePackage.supportsPlaybackTuning) {
                     append(playbackTuningReportLine(playbackTuning))
                 }
@@ -1365,8 +1483,9 @@ class MainActivity : Activity() {
                 (cancelAppliedNs - cancelRequestedNs) / 1_000_000L
             } else null
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.7.6 流式对话中断报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.7.8 小酒狐流式对话中断报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
+                append(performanceReportLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
                 appendLine("结果：用户主动中断")
                 appendLine("已完成音频：${runs.size} 段 · 废弃推理/排队：$abandoned 段")
@@ -1483,8 +1602,9 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.7.6 自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.7.8 小酒狐自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
+            append(performanceReportLine())
             appendLine("固定音色：${primary.displayTitle} · ${currentVoicePackage.title}")
             appendLine("范围：一次冷启动、四类预设热推理、自由输入首次/缓存对照；全程不播放。")
             if (!canRunDynamic) appendLine("自由输入：未导入 RoBERTa，因此本次跳过。")
@@ -1546,21 +1666,21 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.7.6", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.7.8", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.7.6", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.7.8", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次中文、英文或日文长文本试听。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.7.6", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.7.8", longStreamReport))
         showCurrent("上一次长文本报告已复制：$longStreamReportLabel")
     }
 
@@ -1638,6 +1758,7 @@ class MainActivity : Activity() {
             if (view is Button) view.isEnabled = if (::stopButton.isInitialized && view === stopButton) value else !value
             if (view is LinearLayout) for (index in 0 until view.childCount) update(view.getChildAt(index))
         }
+        update(performanceProfilePanel)
         update(buttons)
     }
 
@@ -1649,6 +1770,7 @@ class MainActivity : Activity() {
         frontend.close()
         japaneseFrontend?.close()
         engine.close()
+        window.setSustainedPerformanceMode(false)
         super.onDestroy()
     }
 }

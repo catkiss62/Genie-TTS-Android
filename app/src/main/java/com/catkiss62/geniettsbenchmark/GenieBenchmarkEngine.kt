@@ -28,8 +28,8 @@ import kotlin.math.sqrt
 
 class GenieBenchmarkEngine(
     private val context: Context,
-    private val assetNamespace: String = "benchmark",
-    private val storageNamespace: String = "tiandou",
+    private val assetNamespace: String = "benchmark_jiuhu",
+    private val storageNamespace: String = "jiuhu",
 ) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
     private var manifest: BenchmarkManifest? = null
@@ -48,13 +48,7 @@ class GenieBenchmarkEngine(
 
     fun prepareAssets(progress: (String) -> Unit): File {
         val info = readManifest()
-        val root = if (storageNamespace == "tiandou") {
-            // Preserve the path used by v0.3.0–v0.7.0 so an overwrite install can reuse the
-            // already-extracted 370 MB model instead of copying it again.
-            File(context.filesDir, "genie-benchmark/${info.version}")
-        } else {
-            File(context.filesDir, "genie-benchmark/voices/$storageNamespace/${info.version}")
-        }
+        val root = File(context.filesDir, "genie-benchmark/voices/$storageNamespace/${info.version}")
         copyAssets(root, info.assetFiles.filterNot { it.startsWith("frontend/") }, progress)
         return root
     }
@@ -218,10 +212,18 @@ class GenieBenchmarkEngine(
 
     private fun createSession(model: File, config: EngineConfig, isVocoder: Boolean): OrtSession {
         val options = OrtSession.SessionOptions().apply {
-            setInterOpNumThreads(1)
+            setInterOpNumThreads(max(1, config.interOpThreads))
+            setExecutionMode(
+                when (config.executionMode) {
+                    GraphExecutionMode.SEQUENTIAL -> OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL
+                    GraphExecutionMode.PARALLEL -> OrtSession.SessionOptions.ExecutionMode.PARALLEL
+                }
+            )
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            addConfigEntry("session.intra_op.allow_spinning", if (config.allowSpinning) "1" else "0")
+            addConfigEntry("session.inter_op.allow_spinning", if (config.allowSpinning) "1" else "0")
             when (config.backend) {
-                BackendMode.CPU -> setIntraOpNumThreads(max(1, config.threads))
+                BackendMode.CPU -> setIntraOpNumThreads(config.threads.coerceAtLeast(0))
                 BackendMode.XNNPACK -> {
                     // XNNPACK owns its worker pool. Keeping ORT's own pool at one thread avoids
                     // two thread pools competing for the same mobile CPU cores.

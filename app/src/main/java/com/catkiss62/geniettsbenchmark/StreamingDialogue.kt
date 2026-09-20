@@ -2,13 +2,12 @@ package com.catkiss62.geniettsbenchmark
 
 enum class DialogueLanguage(
     val title: String,
-    val firstTargetChars: Int,
     val targetChars: Int,
     val maxChars: Int,
 ) {
-    CHINESE("中文", 24, 42, 54),
-    ENGLISH("英文", 55, 88, 110),
-    JAPANESE("日文", 24, 42, 54),
+    CHINESE("中文", 42, 54),
+    ENGLISH("英文", 88, 110),
+    JAPANESE("日文", 42, 54),
 }
 
 enum class DialogueLengthMode(val title: String, val maxTokens: Int) {
@@ -73,8 +72,10 @@ object DialogueSegmentPacker {
 }
 
 /**
- * Incremental hard-bounded splitter. Unlike the MoeChat reference it never needs a following
- * network delta to release punctuation and never lets an unpunctuated sentence grow forever.
+ * Incremental splitter matching the AI companion's immersive-room TTS boundary policy.
+ * Natural sentence punctuation closes immediately. Commas are only a safety fallback for an
+ * exceptional punctuation-free run; they do not prematurely cut an ordinary sentence merely
+ * because it crossed a target length.
  */
 class StreamingDialogueSegmenter(private val language: DialogueLanguage) {
     companion object {
@@ -84,7 +85,6 @@ class StreamingDialogueSegmenter(private val language: DialogueLanguage) {
     }
 
     private val buffer = StringBuilder()
-    private var firstSegment = true
     private var receivedChars = 0
 
     fun addDelta(delta: String): List<ClosedDialogueSegment> {
@@ -102,19 +102,14 @@ class StreamingDialogueSegmenter(private val language: DialogueLanguage) {
     private fun drain(flush: Boolean): List<ClosedDialogueSegment> {
         val result = ArrayList<ClosedDialogueSegment>()
         while (buffer.isNotEmpty()) {
-            val target = if (firstSegment) language.firstTargetChars else language.targetChars
             val hardBoundary = firstHardBoundary()
+            val safetyBoundary = if (buffer.length > language.maxChars) hardMaximumBoundary() else -1
             val cut = when {
+                hardBoundary > 0 && safetyBoundary > 0 -> minOf(hardBoundary, safetyBoundary)
                 hardBoundary > 0 -> hardBoundary
-                buffer.length >= target -> preferredSoftBoundary(target)
+                safetyBoundary > 0 -> safetyBoundary
+                flush -> buffer.length
                 else -> -1
-            }.let { candidate ->
-                when {
-                    candidate > 0 -> candidate
-                    buffer.length >= language.maxChars -> hardMaximumBoundary()
-                    flush -> buffer.length
-                    else -> -1
-                }
             }
             if (cut <= 0) break
             val text = buffer.substring(0, cut).trim()
@@ -122,7 +117,6 @@ class StreamingDialogueSegmenter(private val language: DialogueLanguage) {
             while (buffer.isNotEmpty() && buffer.first().isWhitespace()) buffer.deleteCharAt(0)
             if (text.isNotEmpty()) {
                 result += ClosedDialogueSegment(text, receivedChars)
-                firstSegment = false
             }
         }
         return result
@@ -138,20 +132,40 @@ class StreamingDialogueSegmenter(private val language: DialogueLanguage) {
         return -1
     }
 
-    private fun preferredSoftBoundary(target: Int): Int {
-        val upper = minOf(buffer.length, language.maxChars)
-        val lower = maxOf(2, target / 2)
-        for (index in upper - 1 downTo lower) {
-            if (buffer[index] in SOFT_STOPS) return index + 1
-        }
-        return -1
-    }
-
     private fun hardMaximumBoundary(): Int {
         for (index in language.maxChars - 1 downTo language.maxChars / 2) {
             if (buffer[index] in SOFT_STOPS) return index + 1
         }
         return language.maxChars
+    }
+}
+
+/**
+ * Plans a deterministic long-text benchmark with the same queue behavior used by the AI
+ * companion's immersive room: the first complete sentence is submitted immediately; only the
+ * already-available later sentences are packed toward the normal target, without a timer or a
+ * wait for future text.
+ */
+object ImmersiveLongTextPlanner {
+    fun split(text: String, language: DialogueLanguage): List<String> {
+        require(text.isNotBlank()) { "长文本不能为空" }
+        val segmenter = StreamingDialogueSegmenter(language)
+        val naturalUnits = buildList {
+            addAll(segmenter.addDelta(text))
+            addAll(segmenter.finish())
+        }.map { it.text }
+        if (naturalUnits.size <= 1) return naturalUnits
+
+        val result = ArrayList<String>()
+        result += naturalUnits.first()
+        val pending = naturalUnits.drop(1).toMutableList()
+        while (pending.isNotEmpty()) {
+            val packed = DialogueSegmentPacker.packPrefix(pending, language)
+            result += packed.text
+            repeat(packed.sourceUnits) { pending.removeAt(0) }
+        }
+        check(result.all { it.length <= language.maxChars }) { "沉浸房间长文本分段超过安全上限" }
+        return result
     }
 }
 
@@ -169,15 +183,22 @@ object DialogueFixtures {
         "所以现在不用赶时间。你可以先从眼前最简单的事情开始，比如今天吃了什么、路上看见了什么，或者此刻最想做什么。我已经准备好认真听了，不过也不保证一直老老实实不插嘴。",
         "等你讲完以后，我也会把我的版本告诉你。可能有点啰嗦，可能会突然跑题，还可能把一个普通的小插曲说得特别夸张。反正只要最后能一起笑出来，这段时间就没有被浪费。",
         "总之，接下来的话不用一次说完。安静也是对话的一部分，停顿并不意味着冷场。按照你舒服的速度慢慢来就好，我会记住刚才停在了哪里，然后继续陪你往下聊。",
+        "窗外的声音偶尔会打断思路，但也会带来新的话题。也许是一辆慢慢经过的车，也许是风碰到窗帘的轻响，或者楼下有人忽然笑了一声。注意到这些以后，原本安静的房间好像也有了自己的节奏。",
+        "如果说着说着觉得累了，我们就把语速放慢一点。没有必要为了填满沉默而不停寻找新句子，也不用担心停顿会让气氛变得尴尬。真正舒服的陪伴，本来就允许两个人安静地待上一会儿。",
+        "等这一段话结束时，我希望留下来的不是某个标准答案，而是一种可以继续聊下去的感觉。下一次再从这里开始，不管接上旧话题还是突然转向新的念头，都算是这场对话自然的一部分。",
     ).joinToString("")
 
-    private val LONG_EN = List(6) {
-        "When the room became quiet, I remembered a small moment from earlier today. Nothing dramatic happened, but the afternoon light reached the window at just the right angle, and the warm cup on the table made the whole room feel softer. We often forget details like that, even though they can quietly change the mood of an ordinary day. If you want, tell me one small thing you noticed. It does not need to be important, funny, or complete. Start wherever you like, pause whenever you need, and let the conversation wander. I will listen carefully, although I cannot promise that I will never interrupt with a playful comment. "
-    }.joinToString("")
+    private val LONG_EN = listOf(
+        "When the room became quiet, I remembered a small moment from earlier today. Nothing dramatic happened, but the afternoon light reached the window at just the right angle, and the warm cup on the table made the whole room feel softer. We often forget details like that, even though they can quietly change the mood of an ordinary day. If you want, tell me one small thing you noticed. It does not need to be important, funny, or complete. Start wherever you like, pause whenever you need, and let the conversation wander. I will listen carefully, although I cannot promise that I will never interrupt with a playful comment. ",
+        "A comfortable conversation does not have to rush toward a conclusion. It can begin with what you ate, a strange sign you saw on the way home, or a song that suddenly returned to your memory. One detail may lead to another, and the subject may change before either of us notices. Silence is allowed too. If you lose the thread, we can wait for it to come back instead of forcing the next sentence. Later we may forget the exact words, but we may still remember that someone stayed, listened, and answered. That feeling is enough reason to keep talking at our own pace."
+    ).joinToString("")
 
-    private val LONG_JA = List(5) {
-        "部屋が静かになったとき、今日あった小さな出来事を思い出しました。特別な事件ではないけれど、午後の光が窓から差し込んで、まだ温かいお茶が机の上にあって、その普通の瞬間を覚えておきたいと思ったんです。毎日の中には、気づいてもすぐ忘れてしまうことがたくさんあります。でも、遠くから聞こえた音楽や、ちょうどいいタイミングで届いた言葉のように、小さなものが一日を優しくしてくれることもあります。よかったら、あなたが今日見つけたことも教えてください。立派な話でなくても大丈夫です。思いついたところから始めて、途中で止まっても、話題が変わっても気にしないでください。私はここでゆっくり聞いています。"
-    }.joinToString("")
+    private val LONG_JA = listOf(
+        "部屋が静かになったとき、今日あった小さな出来事を思い出しました。特別な事件ではないけれど、午後の光が窓から差し込んで、まだ温かいお茶が机の上にあって、その普通の瞬間を覚えておきたいと思ったんです。毎日の中には、気づいてもすぐ忘れてしまうことがたくさんあります。でも、遠くから聞こえた音楽や、ちょうどいいタイミングで届いた言葉のように、小さなものが一日を優しくしてくれることもあります。よかったら、あなたが今日見つけたことも教えてください。立派な話でなくても大丈夫です。",
+        "会話はいつも急いで結論を出さなくてもいいと思います。今日食べたものや、帰り道で見かけた変な看板や、ふと思い出した昔の歌から始めてもいいんです。一つの話から別の話へ移って、気づいたら最初とは全然違う場所にたどり着いていることもあります。途中で言葉が見つからなくなったら、少し黙って考えましょう。静かな時間も会話の一部ですし、無理に次の言葉を探す必要はありません。あなたのペースで話してくれたら、私はその続きをちゃんと待っています。",
+        "しばらく時間がたてば、今日交わした言葉を全部覚えているわけではないかもしれません。それでも、誰かがそばにいて、最後まで話を聞いて、時々笑わせてくれたという感覚は残る気がします。だから今は、上手に話そうとしなくても大丈夫です。楽しかったことも、少し腹が立ったことも、どうでもいいような小さなことも、そのまま聞かせてください。話が終わるころに少しだけ気持ちが軽くなっていたら、それだけで十分です。次にまた話したくなったときは、今日止まった場所からでも、新しい話題からでも、好きなように始めましょう。",
+        "窓の外から聞こえる音に気を取られたら、そのことを話題にしてもいいですね。風がカーテンを揺らす音や、遠くを通る車の音にも、それぞれ小さな物語があるように感じます。そんな寄り道を重ねながら話していると、何でもない夜が少しだけ特別になります。急ぐ予定はありませんから、思い出したことを一つずつ置いていってください。私はその言葉を受け取りながら、次にどんな景色が見えてくるのか楽しみにしています。最後まできれいにまとめなくても、続きを話したいと思えるところで終われたなら、それが一番自然な会話だと思います。",
+    ).joinToString("")
 
     fun text(language: DialogueLanguage, length: DialogueLengthMode): String = when (length) {
         DialogueLengthMode.SHORT -> when (language) {

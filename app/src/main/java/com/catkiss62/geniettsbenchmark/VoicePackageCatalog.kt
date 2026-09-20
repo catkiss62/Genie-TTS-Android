@@ -12,18 +12,11 @@ data class VoicePackageSpec(
 object VoicePackageCatalog {
     val all = listOf(
         VoicePackageSpec(
-            id = "tiandou",
-            title = "恬豆 V2（主测试包）",
-            assetNamespace = "benchmark",
-            supportsMultilingual = true,
-            supportsDialogueStreaming = true,
-        ),
-        VoicePackageSpec(
             id = "jiuhu",
             title = "小酒狐 V2Pro（4 候选）",
             assetNamespace = "benchmark_jiuhu",
             supportsMultilingual = true,
-            supportsDialogueStreaming = false,
+            supportsDialogueStreaming = true,
             supportsPlaybackTuning = true,
         ),
     )
