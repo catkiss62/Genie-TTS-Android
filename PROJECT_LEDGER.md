@@ -19,6 +19,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 - 修复：完整包继续从已验证 v0.7.6 原位保留全部私有酒狐资源，但覆盖代码后强制 `resources.arsc` 不压缩并重新 zipalign、签名。酒狐清单登记的 `.vits_fp32.bin.PJZyim` 虽然名称像临时文件，仍按资源完整性原则保留，不在本轮擅自裁剪模型内容。
 - 门禁：新增 `tools/verify_apk_installability.py`，CI 和最终完整包都必须验证唯一清单/资源/DEX、`resources.arsc` 为未压缩、native 库路径与 ELF 架构均为 AArch64。ZIP、签名、逐资源 SHA 与该安装门禁必须全部通过才可交付。
 - 功能范围：v0.7.8 的五档互斥推理性能按钮、酒狐唯一模型、约 1000 字三语长文本和沉浸房间式流式分段全部原样保留；不额外构建一份“只修安装”的 APK。
+- 交付验证：远端源码提交 `c37e2bc`，GitHub Actions 第 41 次运行的 Python 语法、Kotlin 编译、16 项单元测试、瘦 APK、安装兼容门禁与打包工具上传全部通过。完整 APK `Genie-TTS-Android-v0.7.9-Jiuhu-performance-full-test.apk` 为 355,913,798 字节，SHA-256 `77f9ca83689ba48db3cc4cfcde4ef633079c46f2274628043f6cd82da8484aa9`；15 个 CI 非 META 核心条目逐字节一致，酒狐清单 48 项逐一通过字节数与 SHA-256，恬豆/乐奈条目为 0。ZIP 自检、4 字节及 16 KiB 页面 zipalign、未压缩 `resources.arsc`、arm64 ELF、v2/v3 签名全部通过，证书保持 AOSP testkey `a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc`。
 
 ### v0.7.8 小酒狐五档性能实验
 
