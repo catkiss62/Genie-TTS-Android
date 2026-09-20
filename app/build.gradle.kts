@@ -17,8 +17,8 @@ android {
         applicationId = "com.catkiss62.geniettsaudition"
         minSdk = 26
         targetSdk = 35
-        versionCode = 26
-        versionName = "0.8.0"
+        versionCode = 27
+        versionName = "0.8.1"
         ndk { abiFilters += "arm64-v8a" }
         if (!skipNativeBuild) {
             externalNativeBuild {
@@ -52,7 +52,7 @@ val verifyJiuhuOnlyAssets = tasks.register("verifyJiuhuOnlyAssets") {
     doLast {
         val retiredTiandouAssets = file("src/main/assets/benchmark")
         check(!retiredTiandouAssets.exists()) {
-            "v0.8.0 is Jiuhu-only: remove app/src/main/assets/benchmark before building"
+            "v0.8.1 is Jiuhu-only: remove app/src/main/assets/benchmark before building"
         }
     }
 }

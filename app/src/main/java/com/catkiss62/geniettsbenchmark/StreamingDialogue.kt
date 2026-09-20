@@ -174,6 +174,21 @@ object DialogueFixtures {
     private const val SHORT_EN = "I just remembered a funny little moment from today, and you were the first person I wanted to tell. Give me a minute and I will tell you the whole story."
     private const val SHORT_JA = "さっき今日の小さな出来事を思い出して、最初にあなたへ話したくなりました。笑わないで、ゆっくり最後まで聞いてくださいね。"
 
+    /**
+     * A medium-length deterministic fixture for the five-profile comparison. It is long enough
+     * to exercise repeated immersive-room segmentation and warm-session behavior, while keeping
+     * a complete five-profile run practical on a phone.
+     */
+    private const val PERFORMANCE_ZH =
+        "房间安静下来以后，我忽然想起今天路上看见的一件小事。" +
+            "傍晚的风把树叶吹得很轻，便利店门口的灯刚刚亮起来，一个人抱着纸袋慢慢走过斑马线。" +
+            "这样的画面没有特别的故事，却让我突然放松下来。" +
+            "后来回到家，我把水烧开，又听见窗外传来几声很远的车响。" +
+            "原本乱糟糟的心情，也跟着一点点安静了。" +
+            "要是你现在就在旁边，我大概会从这件小事开始说起，再顺着想到什么就聊什么。" +
+            "中间停一会儿也没关系，安静本来就是对话的一部分。" +
+            "等这一段说完，我们还可以从刚才停下来的地方继续。"
+
     private val LONG_ZH = listOf(
         "刚才房间安静下来以后，我忽然想起今天发生的一件小事。它其实没有多么特别，只是下午的光刚好落在窗边，桌上的杯子还冒着一点热气，我突然觉得这个普通的瞬间很值得记住。",
         "我们每天都会遇到很多这样的片段。当时可能没有在意，过一会儿再回头看，却会发现它们悄悄改变了那一天的心情。可能是路边亮起的一盏灯，也可能是耳机里随机播放到的一首旧歌。",
@@ -212,6 +227,8 @@ object DialogueFixtures {
             DialogueLanguage.JAPANESE -> LONG_JA
         }
     }
+
+    fun performanceComparisonText(): String = PERFORMANCE_ZH
 
     fun systemPrompt(language: DialogueLanguage, length: DialogueLengthMode): String {
         val languageRule = when (language) {

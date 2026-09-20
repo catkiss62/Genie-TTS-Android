@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.os.PowerManager
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
@@ -30,10 +31,12 @@ import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CancellationException
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 class MainActivity : Activity() {
     companion object {
@@ -215,7 +218,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         content.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n小酒狐 Android 三语性能联调 v0.8.0"
+            text = "Genie-TTS v2.0.2\n小酒狐 Android 三语性能联调 v0.8.1"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
@@ -386,7 +389,23 @@ class MainActivity : Activity() {
 
     private fun setSustainedPerformanceMode(requested: Boolean): Boolean {
         val applied = requested && sustainedPerformanceSupported()
-        window.setSustainedPerformanceMode(applied)
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            window.setSustainedPerformanceMode(applied)
+        } else {
+            val completed = CountDownLatch(1)
+            val failure = AtomicReference<Throwable?>(null)
+            runOnUiThread {
+                try {
+                    window.setSustainedPerformanceMode(applied)
+                } catch (error: Throwable) {
+                    failure.set(error)
+                } finally {
+                    completed.countDown()
+                }
+            }
+            check(completed.await(5L, TimeUnit.SECONDS)) { "切换 Android 持续性能模式超时" }
+            failure.get()?.let { throw it }
+        }
         return applied
     }
 
@@ -668,8 +687,8 @@ class MainActivity : Activity() {
                 bottomMargin = dp(8)
             })
 
-            addButton("运行五档单次对比（不播放）") { runSinglePerformanceComparison() }
-            addButton("复制五档单次对比报告") { copyPerformanceComparisonReport() }
+            addButton("运行五档单次连续对比（不播放）") { runSinglePerformanceComparison() }
+            addButton("复制五档连续对比报告") { copyPerformanceComparisonReport() }
             addButton("运行自动诊断（当前档，不播放）") { runDiagnostic() }
             addButton("复制诊断报告") { copyDiagnosticReport() }
             stopButton = addButton("停止当前任务") {
@@ -1082,7 +1101,7 @@ class MainActivity : Activity() {
             val thermalAtEnd = thermalStatus()
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.8.0 小酒狐${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.8.1 小酒狐${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.displayTitle} · ${config.label}")
                 appendLine("Android 持续性能模式：${sustainedPerformanceStatus()}")
@@ -1146,7 +1165,7 @@ class MainActivity : Activity() {
     private fun copyDialogueReport() {
         if (dialogueReport.isBlank()) return showCurrent("请先完成或中断一次流式联调测试。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.8.0", dialogueReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.8.1", dialogueReport))
         showCurrent("上一次流式联调报告已复制：$dialogueReportLabel")
     }
 
@@ -1438,7 +1457,7 @@ class MainActivity : Activity() {
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
 
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.8.0 小酒狐流式对话联调报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.8.1 小酒狐流式对话联调报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
                 appendLine("音色：${item.displayTitle} · ${config.label}")
@@ -1488,7 +1507,7 @@ class MainActivity : Activity() {
                 (cancelAppliedNs - cancelRequestedNs) / 1_000_000L
             } else null
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.8.0 小酒狐流式对话中断报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.8.1 小酒狐流式对话中断报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 append(performanceReportLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
@@ -1607,7 +1626,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.8.0 小酒狐自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.8.1 小酒狐自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             append(performanceReportLine())
             appendLine("固定音色：${primary.displayTitle} · ${currentVoicePackage.title}")
@@ -1631,47 +1650,88 @@ class MainActivity : Activity() {
         performanceComparisonReport = ""
         engine.stopPlayback()
         val root = ensureAssets()
-        val manifest = engine.readManifest()
+        check(engine.hasFrontendModel(root)) {
+            "五档连续对比需要配套的中文 RoBERTa；请先用页面顶部按钮导入模型"
+        }
+        engine.prepareFrontendAssets(root, ::postStatus)
         val item = currentCase()
-        val preset = manifest.presets.first { it.id == "neutral" }
+        val comparisonText = DialogueFixtures.performanceComparisonText()
+        val segments = ImmersiveLongTextPlanner.split(comparisonText, DialogueLanguage.CHINESE)
         val selectedProfile = currentPerformanceProfile
         val selectedConfig = config
         val entries = mutableListOf<SingleRunPerformanceEntry>()
         val failures = mutableListOf<SingleRunPerformanceFailure>()
         val profiles = PerformanceProfile.entries
+        val totalSteps = profiles.size * segments.size
 
         engine.unloadModels()
         frontend.closeModel()
         frontend.clearPreparedCache()
         try {
-            profiles.forEachIndexed { index, profile ->
+            profiles.forEachIndexed { profileIndex, profile ->
                 checkCancelled()
-                postProgress(index, profiles.size, "正在运行 ${profile.title}：冷加载模型并单次推理……")
+                postProgress(
+                    profileIndex * segments.size,
+                    totalSteps,
+                    "正在运行 ${profile.title}：冷加载模型并连续生成 ${segments.size} 段……",
+                )
                 engine.unloadModels()
+                frontend.closeModel()
+                frontend.clearPreparedCache()
+                config = profile.config
+                frontend.configure(profile.config)
                 var sustainedApplied = false
                 var thermalBefore = thermalStatus()
                 try {
                     sustainedApplied = setSustainedPerformanceMode(profile.config.sustainedPerformance)
                     thermalBefore = thermalStatus()
-                    val started = System.nanoTime()
-                    val modelLoad = engine.loadModels(root, profile.config)
-                    check(modelLoad.loadedThisRun) { "${profile.title} 未执行独立冷加载" }
-                    val result = engine.runPreset(
-                        root = root,
-                        case = item,
-                        preset = preset,
-                        modelLoad = modelLoad,
-                        requestStartedNs = started,
-                        shouldCancel = { cancelRequested },
-                    )
-                    entries += SingleRunPerformanceEntry.from(
+                    val profileStartedNs = System.nanoTime()
+                    val segmentEntries = ArrayList<PerformanceSegmentEntry>(segments.size)
+                    segments.forEachIndexed { segmentIndex, text ->
+                        checkCancelled()
+                        postProgress(
+                            profileIndex * segments.size + segmentIndex,
+                            totalSteps,
+                            "${profile.title} · 第 ${segmentIndex + 1}/${segments.size} 段：中文前处理与推理……",
+                        )
+                        val segmentStartedNs = System.nanoTime()
+                        val prepared = frontend.prepare(root, text, ::postStatus)
+                        val modelLoad = engine.loadModels(root, profile.config)
+                        if (segmentIndex == 0) {
+                            check(modelLoad.loadedThisRun) { "${profile.title} 未执行独立冷加载" }
+                        } else {
+                            check(!modelLoad.loadedThisRun) { "${profile.title} 在连续分段中意外重复冷加载" }
+                        }
+                        val result = engine.runPrepared(
+                            root = root,
+                            case = item,
+                            prepared = prepared,
+                            modelLoad = modelLoad,
+                            requestStartedNs = segmentStartedNs,
+                            targetTitle = "连续基准第 ${segmentIndex + 1} 段",
+                            shouldCancel = { cancelRequested },
+                        )
+                        val readyAfterStartMs = (System.nanoTime() - profileStartedNs) / 1_000_000L
+                        segmentEntries += PerformanceSegmentEntry.from(
+                            index = segmentIndex + 1,
+                            text = text,
+                            readyAfterStartMs = readyAfterStartMs,
+                            result = result,
+                        )
+                    }
+                    entries += SingleRunPerformanceEntry(
                         profile = profile,
                         sustainedPerformanceApplied = sustainedApplied,
                         thermalBefore = thermalBefore,
                         thermalAfter = thermalStatus(),
-                        result = result,
+                        generationWallMs = (System.nanoTime() - profileStartedNs) / 1_000_000L,
+                        segments = segmentEntries,
                     )
-                    postProgress(index + 1, profiles.size, "${profile.title} 完成；不播放，继续下一档。")
+                    postProgress(
+                        (profileIndex + 1) * segments.size,
+                        totalSteps,
+                        "${profile.title} 连续分段完成；不播放，继续下一档。",
+                    )
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Throwable) {
@@ -1682,30 +1742,36 @@ class MainActivity : Activity() {
                         thermalAfter = thermalStatus(),
                         error = error.stackTraceToString().lineSequence().take(12).joinToString("\n"),
                     )
-                    postProgress(index + 1, profiles.size, "${profile.title} 失败，已记录错误并继续下一档。")
+                    postProgress(
+                        (profileIndex + 1) * segments.size,
+                        totalSteps,
+                        "${profile.title} 失败，已记录错误并继续下一档。",
+                    )
                 } finally {
                     engine.unloadModels()
+                    frontend.closeModel()
+                    frontend.clearPreparedCache()
                 }
             }
 
             performanceComparisonReport = PerformanceComparisonReport(
-                version = "0.8.0",
+                version = "0.8.1",
                 timestamp = timeStamp(),
                 deviceLine = deviceLine(),
                 voicePackageTitle = currentVoicePackage.title,
                 caseTitle = item.displayTitle,
-                targetTitle = preset.title,
-                text = preset.text,
+                text = comparisonText,
+                plannedSegments = segments,
                 sustainedPerformanceSupported = sustainedPerformanceSupported(),
                 entries = entries,
                 failures = failures,
             ).render()
             val summary = entries.minByOrNull { it.coreRtf }?.let { fastest ->
-                "当前最快：${fastest.profile.title}，RTF ${"%.3f".format(fastest.coreRtf)}。"
+                "当前最快：${fastest.profile.title}，聚合 RTF ${"%.3f".format(fastest.coreRtf)}。"
             } ?: "五档均未成功，请复制报告中的错误。"
             postStatus(
-                "五档单次对比完成，全程未播放；成功 ${entries.size} 档、失败 ${failures.size} 档。" +
-                    "$summary 点击“复制五档单次对比报告”把整套结果发给我。"
+                "五档单次连续对比完成，全程未播放；成功 ${entries.size} 档、失败 ${failures.size} 档。" +
+                    "$summary 点击“复制五档连续对比报告”把整套结果发给我。"
             )
         } finally {
             engine.unloadModels()
@@ -1761,30 +1827,30 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.8.0", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.8.1", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyPerformanceComparisonReport() {
-        if (performanceComparisonReport.isBlank()) return showCurrent("请先运行一次五档单次对比。")
+        if (performanceComparisonReport.isBlank()) return showCurrent("请先运行一次五档单次连续对比。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(
-            ClipData.newPlainText("Genie TTS five-profile comparison v0.8.0", performanceComparisonReport)
+            ClipData.newPlainText("Genie TTS five-profile comparison v0.8.1", performanceComparisonReport)
         )
-        showCurrent("五档单次对比报告已整套复制。")
+        showCurrent("五档连续对比报告已整套复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.8.0", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.8.1", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次中文、英文或日文长文本试听。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.8.0", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.8.1", longStreamReport))
         showCurrent("上一次长文本报告已复制：$longStreamReportLabel")
     }
 

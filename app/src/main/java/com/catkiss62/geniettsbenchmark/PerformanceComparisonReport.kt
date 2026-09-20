@@ -1,12 +1,13 @@
 package com.catkiss62.geniettsbenchmark
 
 import java.util.Locale
+import kotlin.math.sqrt
 
-data class SingleRunPerformanceEntry(
-    val profile: PerformanceProfile,
-    val sustainedPerformanceApplied: Boolean,
-    val thermalBefore: String,
-    val thermalAfter: String,
+data class PerformanceSegmentEntry(
+    val index: Int,
+    val text: String,
+    val readyAfterStartMs: Long,
+    val frontendMs: Long,
     val modelLoadMs: Long,
     val fixtureLoadMs: Long,
     val encoderMs: Long,
@@ -26,36 +27,93 @@ data class SingleRunPerformanceEntry(
     val pssMb: Int,
 ) {
     companion object {
-        fun from(
-            profile: PerformanceProfile,
-            sustainedPerformanceApplied: Boolean,
-            thermalBefore: String,
-            thermalAfter: String,
-            result: BenchmarkResult,
-        ) = SingleRunPerformanceEntry(
-            profile = profile,
-            sustainedPerformanceApplied = sustainedPerformanceApplied,
-            thermalBefore = thermalBefore,
-            thermalAfter = thermalAfter,
-            modelLoadMs = result.modelLoadMs,
-            fixtureLoadMs = result.fixtureLoadMs,
-            encoderMs = result.encoderMs,
-            firstDecoderMs = result.firstDecoderMs,
-            autoregressiveMs = result.autoregressiveMs,
-            vocoderMs = result.vocoderMs,
-            totalInferenceMs = result.totalInferenceMs,
-            endToEndMs = result.endToEndMs,
-            decoderIterations = result.decoderIterations,
-            audioSeconds = result.audioSeconds,
-            coreRtf = result.coreRtf,
-            semanticTokens = result.semanticTokens,
-            semanticHash = result.semanticHash,
-            audioPeak = result.audioPeak,
-            audioRms = result.audioRms,
-            clippedPercent = result.clippedPercent,
-            pssMb = result.pssMb,
-        )
+        fun from(index: Int, text: String, readyAfterStartMs: Long, result: BenchmarkResult) =
+            PerformanceSegmentEntry(
+                index = index,
+                text = text,
+                readyAfterStartMs = readyAfterStartMs,
+                frontendMs = result.frontendMs,
+                modelLoadMs = if (result.modelLoadedThisRun) result.modelLoadMs else 0L,
+                fixtureLoadMs = result.fixtureLoadMs,
+                encoderMs = result.encoderMs,
+                firstDecoderMs = result.firstDecoderMs,
+                autoregressiveMs = result.autoregressiveMs,
+                vocoderMs = result.vocoderMs,
+                totalInferenceMs = result.totalInferenceMs,
+                endToEndMs = result.endToEndMs,
+                decoderIterations = result.decoderIterations,
+                audioSeconds = result.audioSeconds,
+                coreRtf = result.coreRtf,
+                semanticTokens = result.semanticTokens,
+                semanticHash = result.semanticHash,
+                audioPeak = result.audioPeak,
+                audioRms = result.audioRms,
+                clippedPercent = result.clippedPercent,
+                pssMb = result.pssMb,
+            )
     }
+}
+
+data class SingleRunPerformanceEntry(
+    val profile: PerformanceProfile,
+    val sustainedPerformanceApplied: Boolean,
+    val thermalBefore: String,
+    val thermalAfter: String,
+    val generationWallMs: Long,
+    val segments: List<PerformanceSegmentEntry>,
+) {
+    init {
+        require(segments.isNotEmpty()) { "每档性能测试至少需要一个分段" }
+        require(segments.map { it.index } == (1..segments.size).toList()) { "性能分段序号不连续" }
+    }
+
+    val textChars: Int get() = segments.sumOf { it.text.length }
+    val modelLoadMs: Long get() = segments.sumOf { it.modelLoadMs }
+    val totalFrontendMs: Long get() = segments.sumOf { it.frontendMs }
+    val fixtureLoadMs: Long get() = segments.sumOf { it.fixtureLoadMs }
+    val encoderMs: Long get() = segments.sumOf { it.encoderMs }
+    val firstDecoderMs: Long get() = segments.sumOf { it.firstDecoderMs }
+    val autoregressiveMs: Long get() = segments.sumOf { it.autoregressiveMs }
+    val vocoderMs: Long get() = segments.sumOf { it.vocoderMs }
+    val totalInferenceMs: Long get() = segments.sumOf { it.totalInferenceMs }
+    val decoderIterations: Int get() = segments.sumOf { it.decoderIterations }
+    val audioSeconds: Double get() = segments.sumOf { it.audioSeconds }
+    val coreRtf: Double
+        get() = if (audioSeconds > 0.0) totalInferenceMs / (audioSeconds * 1000.0) else Double.POSITIVE_INFINITY
+    val firstSegmentWaitMs: Long get() = segments.first().readyAfterStartMs
+    val semanticTokens: Int get() = segments.sumOf { it.semanticTokens }
+    val semanticSignature: List<Pair<Int, String>> get() = segments.map { it.semanticTokens to it.semanticHash }
+    val audioPeak: Double get() = segments.maxOf { it.audioPeak }
+    val audioRms: Double
+        get() = if (audioSeconds > 0.0) {
+            sqrt(segments.sumOf { it.audioRms * it.audioRms * it.audioSeconds } / audioSeconds)
+        } else 0.0
+    val clippedPercent: Double
+        get() = if (audioSeconds > 0.0) {
+            segments.sumOf { it.clippedPercent * it.audioSeconds } / audioSeconds
+        } else 0.0
+    val pssMb: Int get() = segments.maxOf { it.pssMb }
+
+    /**
+     * Estimates whether sequential generation could keep a one-track stream fed. Playback is
+     * treated as starting when segment one is ready; later readiness is compared with the audio
+     * duration already produced. This intentionally excludes AudioTrack scheduling noise.
+     */
+    val simulatedBufferMarginsMs: List<Long>
+        get() {
+            if (segments.size <= 1) return emptyList()
+            val playbackStartMs = segments.first().readyAfterStartMs
+            var queuedAudioMs = (segments.first().audioSeconds * 1000.0).toLong()
+            return segments.drop(1).map { segment ->
+                val elapsedPlaybackMs = segment.readyAfterStartMs - playbackStartMs
+                val margin = queuedAudioMs - elapsedPlaybackMs
+                queuedAudioMs += (segment.audioSeconds * 1000.0).toLong()
+                margin
+            }
+        }
+
+    val minSimulatedBufferMarginMs: Long? get() = simulatedBufferMarginsMs.minOrNull()
+    val simulatedLateSegments: Int get() = simulatedBufferMarginsMs.count { it < 0L }
 }
 
 data class SingleRunPerformanceFailure(
@@ -72,8 +130,8 @@ data class PerformanceComparisonReport(
     val deviceLine: String,
     val voicePackageTitle: String,
     val caseTitle: String,
-    val targetTitle: String,
     val text: String,
+    val plannedSegments: List<String>,
     val sustainedPerformanceSupported: Boolean,
     val entries: List<SingleRunPerformanceEntry>,
     val failures: List<SingleRunPerformanceFailure> = emptyList(),
@@ -82,19 +140,22 @@ data class PerformanceComparisonReport(
         val profiles = entries.map { it.profile } + failures.map { it.profile }
         require(profiles.isNotEmpty()) { "性能对比至少需要一项结果" }
         require(profiles.distinct().size == profiles.size) { "性能档结果重复" }
+        require(plannedSegments.isNotEmpty()) { "连续性能对比至少需要一个分段" }
     }
 
     fun render(): String = buildString {
-        appendLine("===== Genie-TTS v$version 小酒狐五档单次性能对比 · $timestamp =====")
+        appendLine("===== Genie-TTS v$version 小酒狐五档连续性能对比 · $timestamp =====")
         appendLine(deviceLine)
-        appendLine("模式：每档一次冷加载 + 一次固定预设推理；只生成 PCM 数据，不创建 AudioTrack、不播放。")
-        appendLine("公平性：同一语音包、同一参考音色、同一预计算文本特征；语速、音调、高频柔化和播放增益均不参与。")
+        appendLine("模式：每档一次独立冷加载 + 同一段中文的连续分段推理；只生成 PCM 数据，不创建 AudioTrack、不播放。")
+        appendLine("连续性：根据各段完成时刻与已生成音频时长估算缓冲余量；这是纯推理对比，不是 AudioTrack underrun 实测。")
+        appendLine("公平性：同一语音包、同一参考音色、同一文本与分段；语速、音调、高频柔化和播放增益均不参与。")
         val entryByProfile = entries.associateBy { it.profile }
         val failureByProfile = failures.associateBy { it.profile }
         val attemptedProfiles = PerformanceProfile.entries.filter { it in entryByProfile || it in failureByProfile }
         appendLine("测试顺序：${attemptedProfiles.joinToString(" → ") { it.title }}")
         appendLine("语音包：$voicePackageTitle · 音色：$caseTitle")
-        appendLine("台词类型：$targetTitle")
+        appendLine("基准文本：${text.length} 字符 · ${plannedSegments.size} 段 · 单段最长 ${plannedSegments.maxOf { it.length }} 字符")
+        appendLine("分段策略：与 AI 伴侣沉浸房间一致；首句立即生成，后续只拼合已闭合句子，中文单段不超过 54 字。")
         appendLine("文本：$text")
         appendLine("Android 持续性能模式支持：${if (sustainedPerformanceSupported) "是" else "否"}")
 
@@ -114,24 +175,36 @@ data class PerformanceComparisonReport(
             appendLine("配置：${entry.profile.config.label}")
             appendLine("持续性能模式实际请求：${if (entry.sustainedPerformanceApplied) "是" else "否"}")
             appendLine("温控：${entry.thermalBefore} → ${entry.thermalAfter}")
-            appendLine("模型冷加载：${entry.modelLoadMs} ms · 测试张量读取：${entry.fixtureLoadMs} ms")
-            appendLine("T2S Encoder：${entry.encoderMs} ms")
-            appendLine("首步 Decoder：${entry.firstDecoderMs} ms")
-            appendLine("自回归 Decoder：${entry.autoregressiveMs} ms / ${entry.decoderIterations} 次")
-            appendLine("VITS：${entry.vocoderMs} ms")
-            appendLine("核心推理：${entry.totalInferenceMs} ms · 端到端等待：${entry.endToEndMs} ms")
-            appendLine("音频时长：${decimal(entry.audioSeconds, 3)} s · RTF：${decimal(entry.coreRtf, 3)}")
-            appendLine("语义序列：${entry.semanticTokens} tokens · ${entry.semanticHash}")
+            appendLine("分段：${entry.segments.size} 段 / ${entry.textChars} 字符 · 模型冷加载：${entry.modelLoadMs} ms")
+            appendLine("中文前处理合计：${entry.totalFrontendMs} ms · 测试张量构造/读取合计：${entry.fixtureLoadMs} ms")
+            appendLine("T2S Encoder 合计：${entry.encoderMs} ms")
+            appendLine("首步 Decoder 合计：${entry.firstDecoderMs} ms")
+            appendLine("自回归 Decoder 合计：${entry.autoregressiveMs} ms / ${entry.decoderIterations} 次")
+            appendLine("VITS 合计：${entry.vocoderMs} ms")
+            appendLine("核心推理合计：${entry.totalInferenceMs} ms · 连续生成墙钟：${entry.generationWallMs} ms")
+            appendLine("首段可用等待：${entry.firstSegmentWaitMs} ms")
+            appendLine("音频合计：${decimal(entry.audioSeconds, 3)} s · 聚合 RTF：${decimal(entry.coreRtf, 3)}")
             appendLine(
-                "波形：峰值 ${decimal(entry.audioPeak, 4)} · RMS ${decimal(entry.audioRms, 4)} · " +
-                    "近削波 ${decimal(entry.clippedPercent, 4)}%"
+                "推算最小缓冲余量：${entry.minSimulatedBufferMarginMs?.let { "$it ms" } ?: "无后续段"} · " +
+                    "推算迟到段：${entry.simulatedLateSegments}/${entry.simulatedBufferMarginsMs.size}"
             )
-            appendLine("PSS：约 ${entry.pssMb} MB")
+            appendLine("语义合计：${entry.semanticTokens} tokens · 波形峰值 ${decimal(entry.audioPeak, 4)} · RMS ${decimal(entry.audioRms, 4)} · 近削波 ${decimal(entry.clippedPercent, 4)}%")
+            appendLine("峰值 PSS：约 ${entry.pssMb} MB")
+            entry.segments.forEach { segment ->
+                val margin = entry.simulatedBufferMarginsMs.getOrNull(segment.index - 2)
+                appendLine(
+                    "  段${segment.index}/${entry.segments.size}：${segment.text.length}字 · 前处理 ${segment.frontendMs} ms · " +
+                        "核心 ${segment.totalInferenceMs} ms · RTF ${decimal(segment.coreRtf, 3)} · " +
+                        "音频 ${decimal(segment.audioSeconds, 2)} s · 点击后就绪 ${segment.readyAfterStartMs} ms" +
+                        (margin?.let { " · 推算缓冲 ${it} ms" } ?: "")
+                )
+                appendLine("    语义 ${segment.semanticTokens} tokens · ${segment.semanticHash} · PSS 约 ${segment.pssMb} MB · 文本：${segment.text}")
+            }
         }
 
         val baseline = entries.firstOrNull { it.profile == PerformanceProfile.BASELINE_8 }
         val ranked = entries.sortedBy { it.coreRtf }
-        appendLine("\n===== 横向汇总（成功档位按核心 RTF 从快到慢） =====")
+        appendLine("\n===== 横向汇总（成功档位按聚合 RTF 从快到慢） =====")
         ranked.forEachIndexed { index, entry ->
             val relative = baseline?.let { baselineEntry ->
                 if (entry.profile == PerformanceProfile.BASELINE_8 || baselineEntry.coreRtf <= 0.0) {
@@ -142,24 +215,25 @@ data class PerformanceComparisonReport(
                 }
             } ?: "无基准"
             appendLine(
-                "${index + 1}. ${entry.profile.title}：RTF ${decimal(entry.coreRtf, 3)} · " +
-                    "核心 ${entry.totalInferenceMs} ms · 端到端 ${entry.endToEndMs} ms · $relative"
+                "${index + 1}. ${entry.profile.title}：聚合 RTF ${decimal(entry.coreRtf, 3)} · " +
+                    "核心 ${entry.totalInferenceMs} ms · 连续生成 ${entry.generationWallMs} ms · " +
+                    "迟到 ${entry.simulatedLateSegments}/${entry.simulatedBufferMarginsMs.size} · $relative"
             )
         }
 
         if (ranked.isEmpty()) {
             appendLine("没有成功完成的档位，请根据上方错误排查。")
         } else {
-            val semanticConsistent = entries.map { it.semanticTokens to it.semanticHash }.distinct().size == 1
+            val semanticConsistent = entries.map { it.semanticSignature }.distinct().size == 1
             val minAudio = entries.minOf { it.audioSeconds }
             val maxAudio = entries.maxOf { it.audioSeconds }
-            appendLine("最快单次结果：${ranked.first().profile.title}")
-            appendLine("语义序列一致：${if (semanticConsistent) "是" else "否（需要排查输出差异）"}")
-            appendLine("成功档位音频时长范围：${decimal(minAudio, 3)}～${decimal(maxAudio, 3)} s")
+            appendLine("最快单次连续结果：${ranked.first().profile.title}")
+            appendLine("逐段语义序列一致：${if (semanticConsistent) "是" else "否（需要排查输出差异）"}")
+            appendLine("成功档位音频总时长范围：${decimal(minAudio, 3)}～${decimal(maxAudio, 3)} s")
             appendLine("峰值 PSS：约 ${entries.maxOf { it.pssMb }} MB")
         }
         appendLine("成功/失败：${entries.size}/${failures.size}")
-        appendLine("说明：单次结果会受温控、系统后台和测试顺序影响；用于先筛出候选档，最终应让最快两档重复测试。")
+        appendLine("说明：连续单次结果仍会受温控、系统后台和固定测试顺序影响；用于筛选候选档，最快两档应再重复确认。")
     }
 
     private fun decimal(value: Double, digits: Int): String =

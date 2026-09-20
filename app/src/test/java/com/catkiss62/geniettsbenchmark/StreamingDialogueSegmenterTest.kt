@@ -98,4 +98,15 @@ class StreamingDialogueSegmenterTest {
         assertEquals("第二句。第三句。第四句。", segments[1])
         assertTrue(segments.all { it.length <= DialogueLanguage.CHINESE.maxChars })
     }
+
+    @Test
+    fun performanceComparisonFixtureIsMediumLengthAndExercisesMultipleSegments() {
+        val text = DialogueFixtures.performanceComparisonText()
+        val segments = ImmersiveLongTextPlanner.split(text, DialogueLanguage.CHINESE)
+
+        assertTrue(text.length in 180..300)
+        assertTrue(segments.size >= 4)
+        assertTrue(segments.all { it.length <= DialogueLanguage.CHINESE.maxChars })
+        assertEquals(text, segments.joinToString(""))
+    }
 }

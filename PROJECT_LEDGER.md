@@ -1,16 +1,26 @@
 # Genie-TTS Android 项目总账
 
-最后更新：2026-09-21 · 当前开发版：v0.8.0（小酒狐一键五档单次性能对比） · 历史稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
+最后更新：2026-09-21 · 当前开发版：v0.8.1（小酒狐五档连续性能对比与主线程修复） · 历史稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
 
 ## 当前接班区
 
-项目已经证明 Genie-TTS v2.0.2 的 GPT-SoVITS V2/V2Pro 权重可以在 Android ARM64 上使用 ONNX Runtime 完整推理。历史恬豆基线已完成三语和长文本验证；从 v0.7.7 起当前测试运行时只保留小酒狐 V2Pro 四候选，v0.7.8 在不改模型和采样的前提下加入五档互斥 CPU 调度实验，v0.7.9 修正完整 APK 的资源表封装，v0.8.0 为五档加入统一的一键单次对比报告。
+项目已经证明 Genie-TTS v2.0.2 的 GPT-SoVITS V2/V2Pro 权重可以在 Android ARM64 上使用 ONNX Runtime 完整推理。历史恬豆基线已完成三语和长文本验证；从 v0.7.7 起当前测试运行时只保留小酒狐 V2Pro 四候选，v0.7.8 在不改模型和采样的前提下加入五档互斥 CPU 调度实验，v0.7.9 修正完整 APK 的资源表封装，v0.8.0 为五档加入统一的一键单次对比报告，v0.8.1 修正持续性能模式的线程错误并把短句采样升级为 219 字连续分段基准。
 
 v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 后续段迟到、15 次 AudioTrack underrun、最小缓冲余量 -113249 ms。v0.6.2 恢复固定 1 秒预填充、取消启动后台预热并让英日前端懒加载后，用户确认整体听感恢复可用。日文 523 字符报告为聚合 RTF 1.063、4 次 underrun、温控全程正常；用户只感知到一次较长等待并认为整体听感不错。v0.6.3 完成命名和文档收口。v0.6.4 修正播放用途和系统静音策略；模型推理链仍与 v0.6.2 相同。v0.7.0 在该稳定链路外新增真实 LLM 文本流联调，不改模型、采样、线程和三语前端。
 
 正式移植请先读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。该文件是后续 AI 接手的最短入口；本总账继续保存完整历史、失败路线和真机依据。
 
-稳定开发分支为 `agent/v001-genie-benchmark`；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`；v0.7.5 高频柔化分支为 `agent/v075-jiuhu-high-frequency-softening`；v0.7.6 四候选分支为 `agent/v076-jiuhu-video-candidates`；v0.7.7 酒狐单模型分支为 `agent/v077-jiuhu-only-long-stream`；v0.7.8/v0.7.9 性能实验与安装修复分支为 `agent/v078-jiuhu-performance-profiles`；v0.8.0 单次对比分支为 `agent/v080-one-tap-performance-report`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+稳定开发分支为 `agent/v001-genie-benchmark`；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`；v0.7.5 高频柔化分支为 `agent/v075-jiuhu-high-frequency-softening`；v0.7.6 四候选分支为 `agent/v076-jiuhu-video-candidates`；v0.7.7 酒狐单模型分支为 `agent/v077-jiuhu-only-long-stream`；v0.7.8/v0.7.9 性能实验与安装修复分支为 `agent/v078-jiuhu-performance-profiles`；v0.8.0 单次对比分支为 `agent/v080-one-tap-performance-report`；v0.8.1 连续基准修复分支为 `agent/v081-continuous-performance-fix`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+
+### v0.8.1 五档连续性能对比与主线程修复
+
+- 真机失败依据：v0.8.0 点击“五档单次对比”后抛出 `ViewRootImpl$CalledFromWrongThreadException`，调用线程为 `pool-4-thread-1`；栈顶指向 `Window.setSustainedPerformanceMode`。根因是五档 worker 在进入最后的长时稳态档，以及测试结束恢复原档时，直接从后台线程修改 Activity 窗口。
+- 线程修复：`setSustainedPerformanceMode` 在主线程时直接执行；在 worker 中则投递到主线程，并等待最多 5 秒确认完成，主线程异常会传回 worker。手动切档、整套测试切档、异常恢复与 `onDestroy` 的行为保持一致，不再允许后台线程直接触碰 Window。
+- 基准长度：不用约 1000 字做五档首轮筛选，也不再使用单个预计算短句。固定中文夹具为 219 字，经沉浸房间相同的 `ImmersiveLongTextPlanner` 拆为 6 段，最长 50 字；它足以覆盖首段冷启动、RoBERTa 会话复用、声学会话热运行与后半程温控变化，同时把五档总等待控制在可接受范围。
+- 执行定义：每档开始时卸载四个声学 ONNX 会话、关闭中文 RoBERTa 并清空文本特征缓存；第一段确认独立冷加载，后续 5 段必须复用同一档会话。五档共用当前所选酒狐候选、同一文本、同一分段、同一模型和采样路径。
+- 不播放理由：`AudioTrack` 不参与模型推理，实际播放会让每档至少等待整段音频时长并给比较加入调度噪声。v0.8.1 仍生成完整 PCM，但不创建播放器；按“首段完成即开播”的时间线，以后续段就绪时刻和既有音频总时长推算缓冲余量、迟到段数。已有约 1000 字按钮仍负责最终真实播放与 underrun 回归。
+- 报告：每档记录 6 段的前处理、各推理阶段、RTF、语义、波形、PSS 和点击后就绪时刻；汇总首段等待、冷加载、连续生成墙钟、聚合 RTF、推算最小缓冲、迟到段、温控与相对基准速度，并按逐段 token 数/哈希检查五档输出一致性。
+- 本地验证：分段器与连续报告纯 Kotlin/JUnit 共 13 项测试通过；新增中等长度夹具边界、缓冲推算、聚合排名、逐段语义差异和单档失败继续覆盖。完整 Android/Kotlin 编译、全项目测试和 APK 装配由 GitHub Actions 完成。
 
 ### v0.8.0 一键五档单次性能对比
 
@@ -167,6 +177,9 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 | v0.7.6 | 保留原酒狐参考并新增三段录屏参考；逐候选独立生成 V2Pro 双提示张量，四候选全链推理门禁；WAV 线性匹配原参考响度 |
 | v0.7.7 | 当前运行时只保留酒狐；构建门禁排除恬豆资源并清理旧安装缓存；三语约 1000 字长文本与真流式统一采用沉浸房间的首句优先、积压拼合和安全上限策略 |
 | v0.7.8 | 酒狐单模型上加入基准8、ORT自动核亲和、均衡6、图并行4×2、Android长时稳态8五档互斥性能实验；中文 RoBERTa 同步跟随档位 |
+| v0.7.9 | 修复二次打包误压缩 `resources.arsc` 导致 Android 11+ 拒装；增加安装兼容门禁 |
+| v0.8.0 | 增加五档一键单次短句对比、统一复制报告、单档失败继续与相对基准排名 |
+| v0.8.1 | 修复持续性能模式后台线程触窗崩溃；五档改为 219 字/6 段连续基准并推算无声播放缓冲连续性 |
 
 ## 真机测试基线
 
