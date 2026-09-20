@@ -1,16 +1,24 @@
 # Genie-TTS Android 项目总账
 
-最后更新：2026-09-20 · 当前测试版：v0.7.8（小酒狐五档性能实验） · 历史稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
+最后更新：2026-09-20 · 当前测试版：v0.7.9（小酒狐五档性能实验与安装兼容修复） · 历史稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
 
 ## 当前接班区
 
-项目已经证明 Genie-TTS v2.0.2 的 GPT-SoVITS V2/V2Pro 权重可以在 Android ARM64 上使用 ONNX Runtime 完整推理。历史恬豆基线已完成三语和长文本验证；从 v0.7.7 起当前测试运行时只保留小酒狐 V2Pro 四候选，v0.7.8 在不改模型和采样的前提下加入五档互斥 CPU 调度实验。
+项目已经证明 Genie-TTS v2.0.2 的 GPT-SoVITS V2/V2Pro 权重可以在 Android ARM64 上使用 ONNX Runtime 完整推理。历史恬豆基线已完成三语和长文本验证；从 v0.7.7 起当前测试运行时只保留小酒狐 V2Pro 四候选，v0.7.8 在不改模型和采样的前提下加入五档互斥 CPU 调度实验，v0.7.9 修正完整 APK 的资源表封装并保留同一组性能实验。
 
 v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 后续段迟到、15 次 AudioTrack underrun、最小缓冲余量 -113249 ms。v0.6.2 恢复固定 1 秒预填充、取消启动后台预热并让英日前端懒加载后，用户确认整体听感恢复可用。日文 523 字符报告为聚合 RTF 1.063、4 次 underrun、温控全程正常；用户只感知到一次较长等待并认为整体听感不错。v0.6.3 完成命名和文档收口。v0.6.4 修正播放用途和系统静音策略；模型推理链仍与 v0.6.2 相同。v0.7.0 在该稳定链路外新增真实 LLM 文本流联调，不改模型、采样、线程和三语前端。
 
 正式移植请先读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。该文件是后续 AI 接手的最短入口；本总账继续保存完整历史、失败路线和真机依据。
 
-稳定开发分支为 `agent/v001-genie-benchmark`；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`；v0.7.5 高频柔化分支为 `agent/v075-jiuhu-high-frequency-softening`；v0.7.6 四候选分支为 `agent/v076-jiuhu-video-candidates`；v0.7.7 酒狐单模型分支为 `agent/v077-jiuhu-only-long-stream`；v0.7.8 性能实验分支为 `agent/v078-jiuhu-performance-profiles`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+稳定开发分支为 `agent/v001-genie-benchmark`；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`；v0.7.5 高频柔化分支为 `agent/v075-jiuhu-high-frequency-softening`；v0.7.6 四候选分支为 `agent/v076-jiuhu-video-candidates`；v0.7.7 酒狐单模型分支为 `agent/v077-jiuhu-only-long-stream`；v0.7.8/v0.7.9 性能实验与安装修复分支为 `agent/v078-jiuhu-performance-profiles`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+
+### v0.7.9 安装兼容修复（保留五档性能实验）
+
+- 真机反馈：首次交付的 v0.7.8 完整 APK 被系统提示“不兼容”。复核确认 ABI 仍为 arm64-v8a、minSdk 26、targetSdk 35，四个 `.so` 与可安装的 v0.7.6 逐字节一致，签名证书也一致；问题不在模型、性能档位或设备架构。
+- 根因：二次覆盖 CI 代码条目时，通用 ZIP 写入把原本必须保持 `STORED` 的 `resources.arsc` 改成了 `DEFLATED`。Android 11+ 对 targetSdk 30+ 的 APK 会以 `INSTALL_PARSE_FAILED_RESOURCES_ARSC_COMPRESSED` 拒绝安装，厂商安装器可能只显示“与系统不兼容”。
+- 修复：完整包继续从已验证 v0.7.6 原位保留私有酒狐资源，但覆盖代码后强制 `resources.arsc` 不压缩并重新 zipalign、签名。顺便删除误留的隐藏临时模型文件 `.vits_fp32.bin.PJZyim`，该文件不在酒狐 manifest 内且不会被运行时读取。
+- 门禁：新增 `tools/verify_apk_installability.py`，CI 和最终完整包都必须验证唯一清单/资源/DEX、`resources.arsc` 为未压缩、无隐藏临时资源、native 库路径与 ELF 架构均为 AArch64。ZIP、签名、资源 SHA 与该安装门禁必须全部通过才可交付。
+- 功能范围：v0.7.8 的五档互斥推理性能按钮、酒狐唯一模型、约 1000 字三语长文本和沉浸房间式流式分段全部原样保留；不额外构建一份“只修安装”的 APK。
 
 ### v0.7.8 小酒狐五档性能实验
 
@@ -21,7 +29,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 - 报告：短句、自动诊断、三语固定长文本、模拟/DeepSeek 真流式均记录档位、intra/inter-op、执行模式、线程忙等和 Android 持续性能支持/请求状态；模型、四组酒狐参考提示、音素、采样与播放调节不变。
 - 测试顺序：同一音色、同一语言、同一播放调节下，先跑基准8，再逐档跑同一约 1000 字文本；首轮作为冷加载记录，比较聚合 RTF、首段开播、后半程分段 RTF、温控、PSS、迟到段与 underrun。不要只用单个短句判定长时稳态档。
 - 源码验证：公开分支 `agent/v078-jiuhu-performance-profiles`、草稿 PR #11；远端提交 `1ec0872`。GitHub Actions 第 38 次运行的 Python 工具语法、Android/Kotlin 编译、16 项单元测试、瘦 APK 与固定打包工具全部通过；不合并 `main`。
-- 完整 APK：`Genie-TTS-Android-v0.7.8-Jiuhu-performance-test-verified.apk` 为 355,352,567 字节，SHA-256 `813e6cc41e680f6e0ea9541e5859b1e739faefec30d74c90924c160d2fac3a9c`。15 个 CI 代码/清单核心条目逐项一致；酒狐 49 个清单文件中 48 项字节数与 SHA-256 全部通过；恬豆、乐奈、源视频和截图条目均为 0。ZIP、4 字节 ZIP 对齐、16 KiB `.so` 页面兼容检查及 v2/v3 签名通过，证书仍为 AOSP testkey `a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc`，可覆盖 v0.7.6。
+- 首次完整 APK（禁止交付）：`Genie-TTS-Android-v0.7.8-Jiuhu-performance-test-verified.apk` 虽通过 ZIP、对齐、签名和资源 SHA 检查，但 `resources.arsc` 被二次组装错误压缩，真机安装器拒绝安装。该包及 SHA-256 `813e6cc41e680f6e0ea9541e5859b1e739faefec30d74c90924c160d2fac3a9c` 已明确作废，不得再次提供。
 - 打包门禁补充：首次中间组装被逐资源 SHA-256 检查拦截，原因是通用解压步骤把两个大型 BIN 写成截断文件；ZIP 自检、对齐和签名对此均不会报错。最终包改为从已验证 v0.7.6 APK 原位保留酒狐压缩条目，只删除恬豆与旧代码，再覆盖第 38 次 CI 的 v0.7.8 核心条目，避免权重经过中间解压；无效中间包不得交付。
 - 发布边界：本轮授权只包括推送分支、运行 GitHub Actions 与构建测试 APK。完整 APK 尚未上传到 GitHub 草稿页；需取得单独上传授权后再放入既有未发布草稿，禁止正式发布 Release。
 

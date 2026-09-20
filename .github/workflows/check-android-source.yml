@@ -38,6 +38,8 @@ jobs:
         run: gradle --no-daemon -PskipNativeBuild=true :app:testDebugUnitTest
       - name: Build thin APK for code verification
         run: gradle --no-daemon -PskipNativeBuild=true :app:assembleDebug
+      - name: Verify APK installability invariants
+        run: python tools/verify_apk_installability.py app/build/outputs/apk/debug/app-debug.apk
       - name: Upload thin verification APK
         uses: actions/upload-artifact@v4
         with:
