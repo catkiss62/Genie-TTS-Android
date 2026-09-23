@@ -145,6 +145,23 @@ data class EngineConfig(
  * pattern 均未得到可复现收益，因此这里明确保持原始执行路径。
  */
 object VerifiedRuntimeConfig {
+    /** v0.7.7 性能实验前的原生 TTS 基线：固定 8 个 intra-op 线程。 */
+    val NATIVE_TTS = EngineConfig(
+        backend = BackendMode.CPU,
+        threads = 8,
+        interOpThreads = 1,
+        executionMode = GraphExecutionMode.SEQUENTIAL,
+        allowSpinning = true,
+        dynamicBlockBase = null,
+        reuseDecoderInputMap = false,
+        denormalTarget = DenormalTarget.NONE,
+        vocoderMemoryPatternOptimization = true,
+        sustainedPerformance = false,
+        profileId = "native_tts_8",
+        profileTitle = "原生 TTS（8线程）",
+    )
+
+    /** 最终收口配置；正式 AI 伴侣只移植这一项。 */
     val AUTO_AFFINITY = EngineConfig(
         backend = BackendMode.CPU,
         threads = 0,
@@ -166,65 +183,15 @@ enum class PerformanceProfile(
     val description: String,
     val config: EngineConfig,
 ) {
-    AUTO_AFFINITY_CONTROL_START(
-        "原始自动（首轮）",
-        "完整保留 v0.8.1 胜出路径，作为测试开始端的冻结对照。",
-        VerifiedRuntimeConfig.AUTO_AFFINITY.copy(
-            profileId = "auto_affinity_control_start",
-            profileTitle = "原始自动（首轮）",
-        ),
+    NATIVE_TTS(
+        "原生 TTS（8线程）",
+        "完整复现 v0.7.7 性能实验前的 CPU 固定 8 线程路径，作为功能与速度基线。",
+        VerifiedRuntimeConfig.NATIVE_TTS,
     ),
-    DECODER_DENORMAL_ZERO(
-        "Decoder去次正规数",
-        "只为首步与自回归 Decoder 启用 FTZ/DAZ，检验极小浮点数是否拖慢自回归热循环。",
-        EngineConfig(
-            BackendMode.CPU,
-            0,
-            denormalTarget = DenormalTarget.DECODERS,
-            profileId = "decoder_denormal_zero",
-            profileTitle = "Decoder去次正规数",
-        ),
-    ),
-    VITS_DENORMAL_ZERO(
-        "VITS去次正规数",
-        "只为 VITS 启用 FTZ/DAZ，直接测试当前耗时最大阶段；PCM16 哈希负责检查可播放输出。",
-        EngineConfig(
-            BackendMode.CPU,
-            0,
-            denormalTarget = DenormalTarget.VOCODER,
-            profileId = "vits_denormal_zero",
-            profileTitle = "VITS去次正规数",
-        ),
-    ),
-    ALL_TTS_DENORMAL_ZERO(
-        "全链去次正规数",
-        "为 Encoder、两个 Decoder 和 VITS 全部启用 FTZ/DAZ，语义与 PCM16 一致性是硬门禁。",
-        EngineConfig(
-            BackendMode.CPU,
-            0,
-            denormalTarget = DenormalTarget.ALL_TTS,
-            profileId = "all_tts_denormal_zero",
-            profileTitle = "全链去次正规数",
-        ),
-    ),
-    VITS_NO_MEMORY_PATTERN(
-        "VITS关闭内存模式",
-        "只关闭 VITS 的 ORT memory pattern，检验连续变长波形是否因动态形状承担额外规划成本。",
-        EngineConfig(
-            BackendMode.CPU,
-            0,
-            vocoderMemoryPatternOptimization = false,
-            profileId = "vits_no_memory_pattern",
-            profileTitle = "VITS关闭内存模式",
-        ),
-    ),
-    AUTO_AFFINITY_CONTROL_END(
-        "原始自动（末轮）",
-        "与首轮功能配置完全相同，用于测量整套测试期间的温控与系统漂移。",
-        VerifiedRuntimeConfig.AUTO_AFFINITY.copy(
-            profileId = "auto_affinity_control_end",
-            profileTitle = "原始自动（末轮）",
-        ),
+    AUTO_AFFINITY(
+        "自动核亲和 TTS",
+        "最终收口路径：intra-op 0 交给 ONNX Runtime 自动建池并应用默认核亲和。",
+        VerifiedRuntimeConfig.AUTO_AFFINITY,
     ),
 }
 
@@ -335,7 +302,7 @@ data class BenchmarkResult(
     val playbackGainDb: Double, val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android 小酒狐三语测试 v0.8.3")
+        appendLine("Genie-TTS Android 小酒狐三语测试 v0.8.4")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
         appendLine("语言前端：$featureModeTitle")
