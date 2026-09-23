@@ -96,6 +96,8 @@ data class EngineConfig(
     val profileTitle: String = "自定义",
 ) {
     init {
+        require(threads >= 0) { "intra-op 线程数不能为负数；0 表示交给 ORT 自动建池/亲和" }
+        require(interOpThreads > 0) { "inter-op 线程数必须为正整数" }
         require(dynamicBlockBase == null || dynamicBlockBase > 0) { "动态分块系数必须为正整数" }
     }
 
@@ -129,6 +131,36 @@ data class EngineConfig(
     }
 }
 
+/**
+ * 真机反复验证后的正式移植配置。
+ *
+ * AI 伴侣接入时请整体复制这组参数，并同时用于：
+ * 1. T2S Encoder；2. 首步 Decoder；3. 自回归 Decoder；4. VITS；
+ * 5. 中文 Chinese RoBERTa（仅中文会创建）。
+ *
+ * 特别注意：threads=0 不是“未配置”，而是有意让 ONNX Runtime 按设备物理核
+ * 自动建立 intra-op 线程池并应用默认亲和策略。不要改成 availableProcessors()、
+ * 固定 8/6/4，也不要用 coerceAtLeast(1) 或 max(1, threads) 把 0 吞掉。
+ * v0.8.2/v0.8.3 的 Decoder 映射复用、动态分块、FTZ/DAZ 和关闭 VITS memory
+ * pattern 均未得到可复现收益，因此这里明确保持原始执行路径。
+ */
+object VerifiedRuntimeConfig {
+    val AUTO_AFFINITY = EngineConfig(
+        backend = BackendMode.CPU,
+        threads = 0,
+        interOpThreads = 1,
+        executionMode = GraphExecutionMode.SEQUENTIAL,
+        allowSpinning = true,
+        dynamicBlockBase = null,
+        reuseDecoderInputMap = false,
+        denormalTarget = DenormalTarget.NONE,
+        vocoderMemoryPatternOptimization = true,
+        sustainedPerformance = false,
+        profileId = "verified_auto_affinity",
+        profileTitle = "已验证自动核亲和",
+    )
+}
+
 enum class PerformanceProfile(
     val title: String,
     val description: String,
@@ -137,9 +169,7 @@ enum class PerformanceProfile(
     AUTO_AFFINITY_CONTROL_START(
         "原始自动（首轮）",
         "完整保留 v0.8.1 胜出路径，作为测试开始端的冻结对照。",
-        EngineConfig(
-            BackendMode.CPU,
-            0,
+        VerifiedRuntimeConfig.AUTO_AFFINITY.copy(
             profileId = "auto_affinity_control_start",
             profileTitle = "原始自动（首轮）",
         ),
@@ -191,9 +221,7 @@ enum class PerformanceProfile(
     AUTO_AFFINITY_CONTROL_END(
         "原始自动（末轮）",
         "与首轮功能配置完全相同，用于测量整套测试期间的温控与系统漂移。",
-        EngineConfig(
-            BackendMode.CPU,
-            0,
+        VerifiedRuntimeConfig.AUTO_AFFINITY.copy(
             profileId = "auto_affinity_control_end",
             profileTitle = "原始自动（末轮）",
         ),
