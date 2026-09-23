@@ -59,8 +59,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  package-full-v083-apk:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/v083-vits-denormal-memory-ab'
+  package-full-v084-apk:
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/v084-native-vs-affinity-diagnostic'
     needs: compile
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -70,7 +70,7 @@ jobs:
       BASE_ASSET_ID: "577389865"
       BASE_SHA256: "355cacb1762bf19f2f530fd656a07008ec06845c6fc6bb6bd49860ab93a75a5f"
       RELEASE_ID: "386095627"
-      APK_NAME: "Genie-TTS-Android-v0.8.3-denormal-memory-optimization-test.apk"
+      APK_NAME: "Genie-TTS-Android-v0.8.4-native-vs-auto-affinity-diagnostic.apk"
       TESTKEY_COMMIT: "045a3d6a3e359633a14853a5a5e1e4f2a11cbdae"
       TESTKEY_CERT_SHA256: "a4384ba815b9499a5ce349b4e33c1755278873fe2eac150a068823f526e6dbde"
       TESTKEY_PK8_SHA256: "495675d32e89a149d5abe191f4e9c0e218b9068714e9b53a7c91e164a0741a23"
@@ -111,11 +111,11 @@ jobs:
           python tools/repackage_full_apk.py \
             base-v082.apk \
             app/build/outputs/apk/debug/app-debug.apk \
-            unsigned-v083.apk
+            unsigned-v084.apk
       - name: Align and sign full APK
         run: |
           BUILD_TOOLS="${ANDROID_HOME}/build-tools/$(ls "${ANDROID_HOME}/build-tools" | sort -V | tail -n 1)"
-          "${BUILD_TOOLS}/zipalign" -P 16 -f 4 unsigned-v083.apk aligned-v083.apk
+          "${BUILD_TOOLS}/zipalign" -P 16 -f 4 unsigned-v084.apk aligned-v084.apk
           "${BUILD_TOOLS}/apksigner" sign \
             --key testkey.pk8 \
             --cert testkey.x509.pem \
@@ -123,7 +123,7 @@ jobs:
             --v2-signing-enabled true \
             --v3-signing-enabled true \
             --out "${APK_NAME}" \
-            aligned-v083.apk
+            aligned-v084.apk
           "${BUILD_TOOLS}/zipalign" -P 16 -c -v 4 "${APK_NAME}"
           "${BUILD_TOOLS}/apksigner" verify --verbose --print-certs "${APK_NAME}"
           python tools/verify_apk_installability.py "${APK_NAME}"
@@ -167,7 +167,7 @@ jobs:
       - name: Upload full APK build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: genie-tts-android-v083-full-test
+          name: genie-tts-android-v084-full-test
           path: ${{ env.APK_NAME }}
           if-no-files-found: error
           compression-level: 0
