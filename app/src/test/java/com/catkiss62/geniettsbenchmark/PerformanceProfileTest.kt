@@ -7,15 +7,8 @@ import org.junit.Test
 
 class PerformanceProfileTest {
     @Test
-    fun profileIdsAndConfigsAreDistinct() {
-        val profiles = PerformanceProfile.entries
-        assertEquals(profiles.size, profiles.map { it.config.profileId }.distinct().size)
-        assertEquals(profiles.size, profiles.map { it.config }.distinct().size)
-    }
-
-    @Test
-    fun originalAutoAffinityPreservesTheV081Winner() {
-        val config = PerformanceProfile.AUTO_AFFINITY_CONTROL_START.config
+    fun verifiedHandoffConfigLocksEveryWinningRuntimeKnob() {
+        val config = VerifiedRuntimeConfig.AUTO_AFFINITY
         assertEquals(BackendMode.CPU, config.backend)
         assertEquals(0, config.threads)
         assertEquals(1, config.interOpThreads)
@@ -26,6 +19,23 @@ class PerformanceProfileTest {
         assertEquals(DenormalTarget.NONE, config.denormalTarget)
         assertTrue(config.vocoderMemoryPatternOptimization)
         assertFalse(config.sustainedPerformance)
+    }
+
+    @Test
+    fun profileIdsAndConfigsAreDistinct() {
+        val profiles = PerformanceProfile.entries
+        assertEquals(profiles.size, profiles.map { it.config.profileId }.distinct().size)
+        assertEquals(profiles.size, profiles.map { it.config }.distinct().size)
+    }
+
+    @Test
+    fun originalAutoAffinityPreservesTheV081Winner() {
+        val config = PerformanceProfile.AUTO_AFFINITY_CONTROL_START.config
+        val verified = VerifiedRuntimeConfig.AUTO_AFFINITY
+        assertEquals(
+            verified.copy(profileId = config.profileId, profileTitle = config.profileTitle),
+            config,
+        )
     }
 
     @Test
