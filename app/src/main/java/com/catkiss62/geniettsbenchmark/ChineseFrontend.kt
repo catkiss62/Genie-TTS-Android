@@ -13,7 +13,7 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
     private val env = OrtEnvironment.getEnvironment()
     private var robertaSession: OrtSession? = null
     private var robertaPath: String? = null
-    private var engineConfig = PerformanceProfile.AUTO_AFFINITY_ORIGINAL.config
+    private var engineConfig = PerformanceProfile.AUTO_AFFINITY_CONTROL_START.config
     private var robertaConfig: EngineConfig? = null
     private var vocab: Map<String, Long>? = null
     private var charPhones: Map<String, List<LongArray>>? = null

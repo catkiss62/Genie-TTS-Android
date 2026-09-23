@@ -198,10 +198,18 @@ class GenieBenchmarkEngine(
         val info = readManifest()
         val start = System.nanoTime()
         try {
-            encoder = createSession(File(root, info.models.getValue("encoder")), config, false)
-            firstDecoder = createSession(File(root, info.models.getValue("first_decoder")), config, false)
-            stageDecoder = createSession(File(root, info.models.getValue("stage_decoder")), config, false)
-            vocoder = createSession(File(root, info.models.getValue("vocoder")), config, true)
+            encoder = createSession(
+                File(root, info.models.getValue("encoder")), config, ModelSessionRole.ENCODER,
+            )
+            firstDecoder = createSession(
+                File(root, info.models.getValue("first_decoder")), config, ModelSessionRole.FIRST_DECODER,
+            )
+            stageDecoder = createSession(
+                File(root, info.models.getValue("stage_decoder")), config, ModelSessionRole.STAGE_DECODER,
+            )
+            vocoder = createSession(
+                File(root, info.models.getValue("vocoder")), config, ModelSessionRole.VOCODER,
+            )
             currentConfig = config
         } catch (error: Throwable) {
             unloadModels()
@@ -210,7 +218,11 @@ class GenieBenchmarkEngine(
         return ModelLoadInfo(true, elapsedMs(start))
     }
 
-    private fun createSession(model: File, config: EngineConfig, isVocoder: Boolean): OrtSession {
+    private fun createSession(
+        model: File,
+        config: EngineConfig,
+        role: ModelSessionRole,
+    ): OrtSession {
         val options = OrtSession.SessionOptions().apply {
             setInterOpNumThreads(max(1, config.interOpThreads))
             setExecutionMode(
@@ -226,6 +238,14 @@ class GenieBenchmarkEngine(
                 // ORT's documented positive session value enables dynamic intra-op task blocks.
                 addConfigEntry("session.dynamic_block_base", it.toString())
             }
+            if (config.flushDenormals(role)) {
+                // ORT 1.22 applies flush-to-zero/denormals-are-zero to this session's worker pool.
+                // Decoder output and playback-resolution PCM hashes remain correctness gates.
+                addConfigEntry("session.set_denormal_as_zero", "1")
+            }
+            if (role == ModelSessionRole.VOCODER && !config.vocoderMemoryPatternOptimization) {
+                setMemoryPatternOptimization(false)
+            }
             when (config.backend) {
                 BackendMode.CPU -> setIntraOpNumThreads(config.threads.coerceAtLeast(0))
                 BackendMode.XNNPACK -> {
@@ -237,7 +257,7 @@ class GenieBenchmarkEngine(
                 }
                 BackendMode.NNAPI_VITS -> {
                     setIntraOpNumThreads(max(1, config.threads))
-                    if (isVocoder) {
+                    if (role == ModelSessionRole.VOCODER) {
                         addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED))
                     }
                 }
