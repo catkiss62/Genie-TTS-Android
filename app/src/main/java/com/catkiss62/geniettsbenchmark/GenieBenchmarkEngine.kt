@@ -223,6 +223,8 @@ class GenieBenchmarkEngine(
         config: EngineConfig,
         role: ModelSessionRole,
     ): OrtSession {
+        // AI 伴侣移植提示：四个 TTS 模型必须全部经过同一个会话配置入口。
+        // 只给 Decoder 或 VITS 设置自动核亲和，会造成线程池互相争用，结果不等价。
         val options = OrtSession.SessionOptions().apply {
             setInterOpNumThreads(max(1, config.interOpThreads))
             setExecutionMode(
@@ -247,7 +249,11 @@ class GenieBenchmarkEngine(
                 setMemoryPatternOptimization(false)
             }
             when (config.backend) {
-                BackendMode.CPU -> setIntraOpNumThreads(config.threads.coerceAtLeast(0))
+                BackendMode.CPU -> {
+                    // 0 是已验证方案的关键值：让 ORT 自动建池并使用默认核亲和。
+                    // EngineConfig 已拒绝负数；这里必须原值传入，禁止强制提升到 1。
+                    setIntraOpNumThreads(config.threads)
+                }
                 BackendMode.XNNPACK -> {
                     // XNNPACK owns its worker pool. Keeping ORT's own pool at one thread avoids
                     // two thread pools competing for the same mobile CPU cores.
