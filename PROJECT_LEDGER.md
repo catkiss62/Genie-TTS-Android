@@ -1,16 +1,24 @@
 # Genie-TTS Android 项目总账
 
-最后更新：2026-09-23 · 当前开发版：v0.8.3（自动核亲和最终收口） · 历史稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
+最后更新：2026-09-23 · 当前开发版：v0.8.4（原生/核亲和双模式收口诊断） · 历史稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
 
 ## 当前接班区
 
-项目已经证明 Genie-TTS v2.0.2 的 GPT-SoVITS V2/V2Pro 权重可以在 Android ARM64 上使用 ONNX Runtime 完整推理。历史恬豆基线已完成三语和长文本验证；从 v0.7.7 起当前测试运行时只保留小酒狐 V2Pro 四候选，v0.7.8 在不改模型和采样的前提下加入五档互斥 CPU 调度实验，v0.7.9 修正完整 APK 的资源表封装，v0.8.0 为五档加入统一的一键单次对比报告，v0.8.1 修正持续性能模式的线程错误并把短句采样升级为 219 字连续分段基准，v0.8.2 证明映射复用与动态分块没有有效收益，v0.8.3 又淘汰 FTZ/DAZ 与 VITS memory pattern 候选。最终按原始自动核亲和收口，并把可直接移植的唯一配置固化为 `VerifiedRuntimeConfig.AUTO_AFFINITY`。
+项目已经证明 Genie-TTS v2.0.2 的 GPT-SoVITS V2/V2Pro 权重可以在 Android ARM64 上使用 ONNX Runtime 完整推理。历史恬豆基线已完成三语和长文本验证；从 v0.7.7 起当前测试运行时只保留小酒狐 V2Pro 四候选，v0.7.8 在不改模型和采样的前提下加入五档互斥 CPU 调度实验，v0.7.9 修正完整 APK 的资源表封装，v0.8.0 为五档加入统一的一键单次对比报告，v0.8.1 修正持续性能模式的线程错误并把短句采样升级为 219 字连续分段基准，v0.8.2 证明映射复用与动态分块没有有效收益，v0.8.3 又淘汰 FTZ/DAZ 与 VITS memory pattern 候选。最终按原始自动核亲和收口，并把可直接移植的唯一配置固化为 `VerifiedRuntimeConfig.AUTO_AFFINITY`。v0.8.4 不再探索新优化，只用原生 8 线程与自动核亲和双模式诊断确认收口功能正常。
 
 v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 后续段迟到、15 次 AudioTrack underrun、最小缓冲余量 -113249 ms。v0.6.2 恢复固定 1 秒预填充、取消启动后台预热并让英日前端懒加载后，用户确认整体听感恢复可用。日文 523 字符报告为聚合 RTF 1.063、4 次 underrun、温控全程正常；用户只感知到一次较长等待并认为整体听感不错。v0.6.3 完成命名和文档收口。v0.6.4 修正播放用途和系统静音策略；模型推理链仍与 v0.6.2 相同。v0.7.0 在该稳定链路外新增真实 LLM 文本流联调，不改模型、采样、线程和三语前端。
 
 正式移植请先读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。该文件是后续 AI 接手的最短入口；本总账继续保存完整历史、失败路线和真机依据。
 
-稳定开发分支为 `agent/v001-genie-benchmark`；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`；v0.7.5 高频柔化分支为 `agent/v075-jiuhu-high-frequency-softening`；v0.7.6 四候选分支为 `agent/v076-jiuhu-video-candidates`；v0.7.7 酒狐单模型分支为 `agent/v077-jiuhu-only-long-stream`；v0.7.8/v0.7.9 性能实验与安装修复分支为 `agent/v078-jiuhu-performance-profiles`；v0.8.0 单次对比分支为 `agent/v080-one-tap-performance-report`；v0.8.1 连续基准修复分支为 `agent/v081-continuous-performance-fix`；v0.8.2 二阶段优化分支为 `agent/v082-auto-affinity-ab-optimization`；v0.8.3 浮点/内存优化分支为 `agent/v083-vits-denormal-memory-ab`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+稳定开发分支为 `agent/v001-genie-benchmark`；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`；v0.7.5 高频柔化分支为 `agent/v075-jiuhu-high-frequency-softening`；v0.7.6 四候选分支为 `agent/v076-jiuhu-video-candidates`；v0.7.7 酒狐单模型分支为 `agent/v077-jiuhu-only-long-stream`；v0.7.8/v0.7.9 性能实验与安装修复分支为 `agent/v078-jiuhu-performance-profiles`；v0.8.0 单次对比分支为 `agent/v080-one-tap-performance-report`；v0.8.1 连续基准修复分支为 `agent/v081-continuous-performance-fix`；v0.8.2 二阶段优化分支为 `agent/v082-auto-affinity-ab-optimization`；v0.8.3 浮点/内存优化分支为 `agent/v083-vits-denormal-memory-ab`；v0.8.4 收口诊断分支为 `agent/v084-native-vs-affinity-diagnostic`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+
+### v0.8.4 原生/核亲和双模式收口诊断
+
+- 目的：不再新增推理实验，只验证最终自动核亲和在收口代码中功能完整，并保留性能实验前的 v0.7.7 原生固定 8 线程作为明确对照。
+- 两档定义：`原生 TTS（8线程）` 与 `自动核亲和 TTS` 都使用 CPU EP、inter-op 1、顺序图、`ALL_OPT`、双 spinning、原 Decoder 循环和默认 memory pattern；唯一调度差异是 intra-op `8` 与 `0`。默认运行档为自动核亲和。
+- 一键诊断：固定顺序运行同一 219 字/6 段中文连续基准，两档各自独立冷加载四个 TTS 会话，共用一次中文特征预计算和一次不计分热身，不创建 AudioTrack、不播放。
+- 报告门禁：逐段比较语义哈希、播放级 PCM16 哈希和音频总时长；同时输出 Encoder、首步/自回归 Decoder、VITS、聚合 RTF、首段等待、推算缓冲、PSS 以及核亲和相对原生的速度差异。只有两档输出完全一致才显示“双模式功能一致性：通过”。
+- UI 收口：移除六档浮点/内存实验按钮和报告措辞，只显示两个手动档位、“一键诊断原生 TTS 与核亲和”及“复制双模式诊断报告”。正式 AI 伴侣仍只移植 `VerifiedRuntimeConfig.AUTO_AFFINITY`，原生档不作为产品默认值。
 
 ### v0.8.3 首尾对照与浮点/内存优化
 
@@ -203,6 +211,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 | v0.8.1 | 修复持续性能模式后台线程触窗崩溃；五档改为 219 字/6 段连续基准并推算无声播放缓冲连续性 |
 | v0.8.2 | 冻结 v0.8.1 原始自动核亲和胜出路径；一键对比 Decoder 映射复用及 ORT 动态分块 2/4/8 |
 | v0.8.3 | 首尾重复原始自动并线性插值；共同前处理/不计分热身；对比 Decoder/VITS FTZ/DAZ 与 VITS memory pattern |
+| v0.8.4 | 性能测试收口为原生 8 线程与自动核亲和双模式；一键验证逐段语义/PCM16 功能一致性并报告速度差异 |
 
 ## 真机测试基线
 
