@@ -24,6 +24,7 @@ data class PerformanceSegmentEntry(
     val audioPeak: Double,
     val audioRms: Double,
     val clippedPercent: Double,
+    val pcm16Hash: String,
     val pssMb: Int,
 ) {
     companion object {
@@ -49,8 +50,19 @@ data class PerformanceSegmentEntry(
                 audioPeak = result.audioPeak,
                 audioRms = result.audioRms,
                 clippedPercent = result.clippedPercent,
+                pcm16Hash = pcm16Hash(result.audio),
                 pssMb = result.pssMb,
             )
+
+        private fun pcm16Hash(audio: FloatArray): String {
+            var hash = 1
+            audio.forEach { value ->
+                val sample = (value.coerceIn(-1.0f, 1.0f) * Short.MAX_VALUE)
+                    .toInt().toShort().toInt()
+                hash = 31 * hash + sample
+            }
+            return hash.toUInt().toString(16).padStart(8, '0')
+        }
     }
 }
 
@@ -83,6 +95,7 @@ data class SingleRunPerformanceEntry(
     val firstSegmentWaitMs: Long get() = segments.first().readyAfterStartMs
     val semanticTokens: Int get() = segments.sumOf { it.semanticTokens }
     val semanticSignature: List<Pair<Int, String>> get() = segments.map { it.semanticTokens to it.semanticHash }
+    val pcm16Signature: List<String> get() = segments.map { it.pcm16Hash }
     val audioPeak: Double get() = segments.maxOf { it.audioPeak }
     val audioRms: Double
         get() = if (audioSeconds > 0.0) {
@@ -133,6 +146,8 @@ data class PerformanceComparisonReport(
     val text: String,
     val plannedSegments: List<String>,
     val sustainedPerformanceSupported: Boolean,
+    val sharedFrontendMs: Long,
+    val warmupInferenceMs: Long,
     val entries: List<SingleRunPerformanceEntry>,
     val failures: List<SingleRunPerformanceFailure> = emptyList(),
 ) {
@@ -144,11 +159,12 @@ data class PerformanceComparisonReport(
     }
 
     fun render(): String = buildString {
-        appendLine("===== Genie-TTS v$version 小酒狐自动核亲和优化对比 · $timestamp =====")
+        appendLine("===== Genie-TTS v$version 小酒狐浮点/内存优化对比 · $timestamp =====")
         appendLine(deviceLine)
-        appendLine("模式：每档一次独立冷加载 + 同一段中文的连续分段推理；只生成 PCM 数据，不创建 AudioTrack、不播放。")
+        appendLine("模式：共用一次中文前处理 + 一次不计分热身；随后每档独立冷加载 TTS 并连续分段推理，只生成 PCM 数据，不创建 AudioTrack、不播放。")
         appendLine("连续性：根据各段完成时刻与已生成音频时长估算缓冲余量；这是纯推理对比，不是 AudioTrack underrun 实测。")
-        appendLine("公平性：原始自动核亲和完整保留为对照；所有档位共用同一语音包、参考音色、文本与分段，语速、音调、高频柔化和播放增益均不参与。")
+        appendLine("公平性：首尾各跑一次完全相同的原始自动核亲和；候选档按所在位置与两次对照线性插值，抵消固定顺序的温控/系统漂移。")
+        appendLine("共同准备：中文前处理 $sharedFrontendMs ms（不计入各档） · 原始自动热身核心 $warmupInferenceMs ms（不计分）。")
         val entryByProfile = entries.associateBy { it.profile }
         val failureByProfile = failures.associateBy { it.profile }
         val attemptedProfiles = PerformanceProfile.entries.filter { it in entryByProfile || it in failureByProfile }
@@ -176,7 +192,7 @@ data class PerformanceComparisonReport(
             appendLine("持续性能模式实际请求：${if (entry.sustainedPerformanceApplied) "是" else "否"}")
             appendLine("温控：${entry.thermalBefore} → ${entry.thermalAfter}")
             appendLine("分段：${entry.segments.size} 段 / ${entry.textChars} 字符 · 模型冷加载：${entry.modelLoadMs} ms")
-            appendLine("中文前处理合计：${entry.totalFrontendMs} ms · 测试张量构造/读取合计：${entry.fixtureLoadMs} ms")
+            appendLine("中文前处理：共用预计算（本档 ${entry.totalFrontendMs} ms） · 测试张量构造/读取合计：${entry.fixtureLoadMs} ms")
             appendLine("T2S Encoder 合计：${entry.encoderMs} ms")
             appendLine("首步 Decoder 合计：${entry.firstDecoderMs} ms")
             appendLine("自回归 Decoder 合计：${entry.autoregressiveMs} ms / ${entry.decoderIterations} 次")
@@ -198,22 +214,43 @@ data class PerformanceComparisonReport(
                         "音频 ${decimal(segment.audioSeconds, 2)} s · 点击后就绪 ${segment.readyAfterStartMs} ms" +
                         (margin?.let { " · 推算缓冲 ${it} ms" } ?: "")
                 )
-                appendLine("    语义 ${segment.semanticTokens} tokens · ${segment.semanticHash} · PSS 约 ${segment.pssMb} MB · 文本：${segment.text}")
+                appendLine("    语义 ${segment.semanticTokens} tokens · ${segment.semanticHash} · PCM16 ${segment.pcm16Hash} · PSS 约 ${segment.pssMb} MB · 文本：${segment.text}")
             }
         }
 
-        val baseline = entries.firstOrNull { it.profile == PerformanceProfile.AUTO_AFFINITY_ORIGINAL }
+        val startControl = entries.firstOrNull {
+            it.profile == PerformanceProfile.AUTO_AFFINITY_CONTROL_START
+        }
+        val endControl = entries.firstOrNull {
+            it.profile == PerformanceProfile.AUTO_AFFINITY_CONTROL_END
+        }
+        fun interpolatedControl(profile: PerformanceProfile): Double? {
+            val start = startControl ?: return null
+            val end = endControl ?: return start.coreRtf
+            val all = PerformanceProfile.entries
+            val startIndex = all.indexOf(PerformanceProfile.AUTO_AFFINITY_CONTROL_START)
+            val endIndex = all.indexOf(PerformanceProfile.AUTO_AFFINITY_CONTROL_END)
+            val profileIndex = all.indexOf(profile)
+            if (profileIndex <= startIndex) return start.coreRtf
+            if (profileIndex >= endIndex) return end.coreRtf
+            val fraction = (profileIndex - startIndex).toDouble() / (endIndex - startIndex)
+            return start.coreRtf + (end.coreRtf - start.coreRtf) * fraction
+        }
         val ranked = entries.sortedBy { it.coreRtf }
         appendLine("\n===== 横向汇总（成功档位按聚合 RTF 从快到慢） =====")
         ranked.forEachIndexed { index, entry ->
-            val relative = baseline?.let { baselineEntry ->
-                if (entry.profile == PerformanceProfile.AUTO_AFFINITY_ORIGINAL || baselineEntry.coreRtf <= 0.0) {
-                    "原始自动基准"
-                } else {
-                    val faster = (baselineEntry.coreRtf - entry.coreRtf) / baselineEntry.coreRtf * 100.0
-                    if (faster >= 0.0) "比原始自动快 ${decimal(faster, 1)}%" else "比原始自动慢 ${decimal(-faster, 1)}%"
-                }
-            } ?: "缺少原始自动基准"
+            val relative = when (entry.profile) {
+                PerformanceProfile.AUTO_AFFINITY_CONTROL_START -> "首轮冻结对照"
+                PerformanceProfile.AUTO_AFFINITY_CONTROL_END -> "末轮冻结对照"
+                else -> interpolatedControl(entry.profile)?.let { baselineRtf ->
+                    val faster = (baselineRtf - entry.coreRtf) / baselineRtf * 100.0
+                    if (faster >= 0.0) {
+                        "比同期插值对照快 ${decimal(faster, 1)}%"
+                    } else {
+                        "比同期插值对照慢 ${decimal(-faster, 1)}%"
+                    }
+                } ?: "缺少首轮对照"
+            }
             appendLine(
                 "${index + 1}. ${entry.profile.title}：聚合 RTF ${decimal(entry.coreRtf, 3)} · " +
                     "核心 ${entry.totalInferenceMs} ms · 连续生成 ${entry.generationWallMs} ms · " +
@@ -225,15 +262,45 @@ data class PerformanceComparisonReport(
             appendLine("没有成功完成的档位，请根据上方错误排查。")
         } else {
             val semanticConsistent = entries.map { it.semanticSignature }.distinct().size == 1
+            val pcm16Consistent = entries.map { it.pcm16Signature }.distinct().size == 1
             val minAudio = entries.minOf { it.audioSeconds }
             val maxAudio = entries.maxOf { it.audioSeconds }
             appendLine("最快单次连续结果：${ranked.first().profile.title}")
             appendLine("逐段语义序列一致：${if (semanticConsistent) "是" else "否（需要排查输出差异）"}")
+            appendLine("逐段播放级 PCM16 一致：${if (pcm16Consistent) "是" else "否（需试听并排查波形差异）"}")
             appendLine("成功档位音频总时长范围：${decimal(minAudio, 3)}～${decimal(maxAudio, 3)} s")
             appendLine("峰值 PSS：约 ${entries.maxOf { it.pssMb }} MB")
+            if (startControl != null && endControl != null) {
+                val drift = (endControl.coreRtf - startControl.coreRtf) / startControl.coreRtf * 100.0
+                appendLine(
+                    "首尾原始对照漂移：${if (drift >= 0.0) "+" else ""}${decimal(drift, 1)}%" +
+                        (if (kotlin.math.abs(drift) >= 5.0) {
+                            "（偏大，建议冷却后复测）"
+                        } else {
+                            "（可接受）"
+                        })
+                )
+            }
+            val validCandidates = entries.filter { entry ->
+                entry.profile != PerformanceProfile.AUTO_AFFINITY_CONTROL_START &&
+                    entry.profile != PerformanceProfile.AUTO_AFFINITY_CONTROL_END &&
+                    entry.semanticSignature == startControl?.semanticSignature &&
+                    entry.pcm16Signature == startControl?.pcm16Signature &&
+                    interpolatedControl(entry.profile)?.let { baseline ->
+                        (baseline - entry.coreRtf) / baseline >= 0.03
+                    } == true
+            }
+            appendLine(
+                "达到候选门槛（≥3.0% 且语义/PCM16一致）：" +
+                    (if (validCandidates.isEmpty()) {
+                        "无"
+                    } else {
+                        validCandidates.joinToString("、") { it.profile.title }
+                    })
+            )
         }
         appendLine("成功/失败：${entries.size}/${failures.size}")
-        appendLine("说明：连续单次结果仍会受温控、系统后台和固定测试顺序影响；原始自动档是冻结对照，新优化档中最快两档应再重复确认。")
+        appendLine("说明：候选需相对同期插值对照至少快 3.0%，且语义与播放级 PCM16 一致；未过门槛不移植到 AI 伴侣。")
     }
 
     private fun decimal(value: Double, digits: Int): String =

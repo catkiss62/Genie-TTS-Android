@@ -58,3 +58,117 @@ jobs:
             /usr/local/lib/android/sdk/build-tools/37.0.0/zipalign
           if-no-files-found: error
           retention-days: 1
+
+  package-full-v083-apk:
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/v083-vits-denormal-memory-ab'
+    needs: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      BASE_ASSET_ID: "577389865"
+      BASE_SHA256: "355cacb1762bf19f2f530fd656a07008ec06845c6fc6bb6bd49860ab93a75a5f"
+      RELEASE_ID: "386095627"
+      APK_NAME: "Genie-TTS-Android-v0.8.3-denormal-memory-optimization-test.apk"
+      TESTKEY_COMMIT: "045a3d6a3e359633a14853a5a5e1e4f2a11cbdae"
+      TESTKEY_CERT_SHA256: "a4384ba815b9499a5ce349b4e33c1755278873fe2eac150a068823f526e6dbde"
+      TESTKEY_PK8_SHA256: "495675d32e89a149d5abe191f4e9c0e218b9068714e9b53a7c91e164a0741a23"
+      CERT_DER_SHA256: "a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Build CI-verified thin APK
+        run: gradle --no-daemon -PskipNativeBuild=true :app:assembleDebug
+      - name: Download verified v0.8.2 full APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            -H "Accept: application/octet-stream" \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${BASE_ASSET_ID}" \
+            > base-v082.apk
+          echo "${BASE_SHA256}  base-v082.apk" | sha256sum --check --strict
+      - name: Obtain pinned AOSP test key
+        run: |
+          curl --fail --location --retry 3 \
+            --output testkey.x509.pem \
+            "https://raw.githubusercontent.com/aosp-mirror/platform_build/${TESTKEY_COMMIT}/target/product/security/testkey.x509.pem"
+          curl --fail --location --retry 3 \
+            --output testkey.pk8 \
+            "https://raw.githubusercontent.com/aosp-mirror/platform_build/${TESTKEY_COMMIT}/target/product/security/testkey.pk8"
+          echo "${TESTKEY_CERT_SHA256}  testkey.x509.pem" | sha256sum --check --strict
+          echo "${TESTKEY_PK8_SHA256}  testkey.pk8" | sha256sum --check --strict
+          test "$(openssl x509 -in testkey.x509.pem -outform DER | sha256sum | cut -d' ' -f1)" = "${CERT_DER_SHA256}"
+      - name: Overlay code while preserving Jiuhu assets
+        run: |
+          python tools/repackage_full_apk.py \
+            base-v082.apk \
+            app/build/outputs/apk/debug/app-debug.apk \
+            unsigned-v083.apk
+      - name: Align and sign full APK
+        run: |
+          BUILD_TOOLS="${ANDROID_HOME}/build-tools/$(ls "${ANDROID_HOME}/build-tools" | sort -V | tail -n 1)"
+          "${BUILD_TOOLS}/zipalign" -P 16 -f 4 unsigned-v083.apk aligned-v083.apk
+          "${BUILD_TOOLS}/apksigner" sign \
+            --key testkey.pk8 \
+            --cert testkey.x509.pem \
+            --v1-signing-enabled false \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out "${APK_NAME}" \
+            aligned-v083.apk
+          "${BUILD_TOOLS}/zipalign" -P 16 -c -v 4 "${APK_NAME}"
+          "${BUILD_TOOLS}/apksigner" verify --verbose --print-certs "${APK_NAME}"
+          python tools/verify_apk_installability.py "${APK_NAME}"
+      - name: Verify CI overlay and private-resource boundary
+        run: |
+          python - "${APK_NAME}" app/build/outputs/apk/debug/app-debug.apk <<'PY'
+          import hashlib
+          import sys
+          import zipfile
+
+          full_path, thin_path = sys.argv[1:]
+          with zipfile.ZipFile(full_path) as full, zipfile.ZipFile(thin_path) as thin:
+              full_names = set(full.namelist())
+              thin_entries = [item for item in thin.infolist() if not item.filename.startswith("META-INF/")]
+              for item in thin_entries:
+                  if hashlib.sha256(full.read(item.filename)).digest() != hashlib.sha256(thin.read(item)).digest():
+                      raise SystemExit(f"CI entry mismatch: {item.filename}")
+              jiuhu = [name for name in full_names if name.startswith("assets/benchmark_jiuhu/")]
+              retired = [name for name in full_names if name.startswith("assets/benchmark/") or any(token in name.lower() for token in ("tiandou", "lenai", "/mao"))]
+              if len(jiuhu) != 49 or retired:
+                  raise SystemExit(f"asset boundary failed: jiuhu={len(jiuhu)}, retired={retired[:5]}")
+              print(f"Verified {len(thin_entries)} CI entries, {len(jiuhu)} Jiuhu assets, no retired voice assets")
+          PY
+          test "$(openssl x509 -in testkey.x509.pem -outform DER | sha256sum | cut -d' ' -f1)" = "${CERT_DER_SHA256}"
+          sha256sum "${APK_NAME}"
+          stat --format='%n %s bytes' "${APK_NAME}"
+      - name: Upload to existing unpublished draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --jq '.draft')" = "true"
+          OLD_ASSET_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" --paginate --jq ".[] | select(.name == \"${APK_NAME}\") | .id" | head -n 1)"
+          if [ -n "${OLD_ASSET_ID}" ]; then
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${OLD_ASSET_ID}"
+          fi
+          gh api \
+            --method POST \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            --input "${APK_NAME}" \
+            "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${APK_NAME}"
+      - name: Upload full APK build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: genie-tts-android-v083-full-test
+          path: ${{ env.APK_NAME }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1

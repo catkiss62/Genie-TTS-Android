@@ -1,16 +1,27 @@
 # Genie-TTS Android 项目总账
 
-最后更新：2026-09-21 · 当前开发版：v0.8.2（原始自动核亲和冻结对照与二阶段优化） · 历史稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
+最后更新：2026-09-23 · 当前开发版：v0.8.3（自动核亲和最终收口） · 历史稳定基线：v0.6.4 · 仓库：`catkiss62/Genie-TTS-Android`
 
 ## 当前接班区
 
-项目已经证明 Genie-TTS v2.0.2 的 GPT-SoVITS V2/V2Pro 权重可以在 Android ARM64 上使用 ONNX Runtime 完整推理。历史恬豆基线已完成三语和长文本验证；从 v0.7.7 起当前测试运行时只保留小酒狐 V2Pro 四候选，v0.7.8 在不改模型和采样的前提下加入五档互斥 CPU 调度实验，v0.7.9 修正完整 APK 的资源表封装，v0.8.0 为五档加入统一的一键单次对比报告，v0.8.1 修正持续性能模式的线程错误并把短句采样升级为 219 字连续分段基准，v0.8.2 保留已胜出的原始自动核亲和并只围绕其自回归热循环继续做可归因优化。
+项目已经证明 Genie-TTS v2.0.2 的 GPT-SoVITS V2/V2Pro 权重可以在 Android ARM64 上使用 ONNX Runtime 完整推理。历史恬豆基线已完成三语和长文本验证；从 v0.7.7 起当前测试运行时只保留小酒狐 V2Pro 四候选，v0.7.8 在不改模型和采样的前提下加入五档互斥 CPU 调度实验，v0.7.9 修正完整 APK 的资源表封装，v0.8.0 为五档加入统一的一键单次对比报告，v0.8.1 修正持续性能模式的线程错误并把短句采样升级为 219 字连续分段基准，v0.8.2 证明映射复用与动态分块没有有效收益，v0.8.3 又淘汰 FTZ/DAZ 与 VITS memory pattern 候选。最终按原始自动核亲和收口，并把可直接移植的唯一配置固化为 `VerifiedRuntimeConfig.AUTO_AFFINITY`。
 
 v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 后续段迟到、15 次 AudioTrack underrun、最小缓冲余量 -113249 ms。v0.6.2 恢复固定 1 秒预填充、取消启动后台预热并让英日前端懒加载后，用户确认整体听感恢复可用。日文 523 字符报告为聚合 RTF 1.063、4 次 underrun、温控全程正常；用户只感知到一次较长等待并认为整体听感不错。v0.6.3 完成命名和文档收口。v0.6.4 修正播放用途和系统静音策略；模型推理链仍与 v0.6.2 相同。v0.7.0 在该稳定链路外新增真实 LLM 文本流联调，不改模型、采样、线程和三语前端。
 
 正式移植请先读 [AI_COMPANION_INTEGRATION_GUIDE.md](AI_COMPANION_INTEGRATION_GUIDE.md)。该文件是后续 AI 接手的最短入口；本总账继续保存完整历史、失败路线和真机依据。
 
-稳定开发分支为 `agent/v001-genie-benchmark`；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`；v0.7.5 高频柔化分支为 `agent/v075-jiuhu-high-frequency-softening`；v0.7.6 四候选分支为 `agent/v076-jiuhu-video-candidates`；v0.7.7 酒狐单模型分支为 `agent/v077-jiuhu-only-long-stream`；v0.7.8/v0.7.9 性能实验与安装修复分支为 `agent/v078-jiuhu-performance-profiles`；v0.8.0 单次对比分支为 `agent/v080-one-tap-performance-report`；v0.8.1 连续基准修复分支为 `agent/v081-continuous-performance-fix`；v0.8.2 二阶段优化分支为 `agent/v082-auto-affinity-ab-optimization`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+稳定开发分支为 `agent/v001-genie-benchmark`；v0.7.4 功能分支为 `agent/v074-jiuhu-trilingual-controls`；v0.7.5 高频柔化分支为 `agent/v075-jiuhu-high-frequency-softening`；v0.7.6 四候选分支为 `agent/v076-jiuhu-video-candidates`；v0.7.7 酒狐单模型分支为 `agent/v077-jiuhu-only-long-stream`；v0.7.8/v0.7.9 性能实验与安装修复分支为 `agent/v078-jiuhu-performance-profiles`；v0.8.0 单次对比分支为 `agent/v080-one-tap-performance-report`；v0.8.1 连续基准修复分支为 `agent/v081-continuous-performance-fix`；v0.8.2 二阶段优化分支为 `agent/v082-auto-affinity-ab-optimization`；v0.8.3 浮点/内存优化分支为 `agent/v083-vits-denormal-memory-ab`。原始角色权重、参考录音、转换后的 ONNX 模型和可识别角色身份的数据均不得提交到公开仓库。
+
+### v0.8.3 首尾对照与浮点/内存优化
+
+- 上轮结论：v0.8.2 一键真机测试中，原始自动 RTF `1.220`，Decoder 映射复用 `1.218`，只快 `0.1%`；动态分块 4/2/8 分别为 `1.247/1.257/1.258`，慢 `2.2%/3.1%/3.2%`。五档语义序列和 39.960 秒音频时长一致，但没有候选达到有效收益，因此 v0.8.3 全部回到原始 Decoder 循环。
+- 候选定义：保持 ORT 1.22.0、CPU EP、`threads=0` 自动物理核/亲和、顺序图和忙等开启，分别测试 `session.set_denormal_as_zero=1` 只作用于两个 Decoder、只作用于 VITS、作用于四个 TTS 会话，以及只为 VITS 关闭 memory pattern。FTZ/DAZ 可能改变极小浮点值，所以语义与播放级 PCM16 一致性均设为硬门禁。
+- 公平性修正：六档按“原始首轮 → 四候选 → 原始末轮”固定执行。开始前把 219 字/6 段中文特征共同预计算一次，并用原始档跑一段不计分热身；测量时每档仍独立冷加载四个 TTS 会话。候选相对速度按其位置对首尾原始 RTF 线性插值，不再让首档独自承担 RoBERTa 懒初始化，也可量化测试期间的热漂移。
+- 判定：报告逐段记录 token/语义哈希与 PCM16 哈希；候选相对同期插值对照至少快 `3.0%` 且两种输出签名一致才进入下一轮。首尾原始对照漂移绝对值达到 `5%` 时，报告明确提示冷却后复测。
+- 真机结论：首次运行首尾原始 RTF 为 `0.988 → 1.160`，漂移 `+17.4%`，因此候选表面收益全部作废。手机冷却后的复测为 `0.900 → 0.965`，漂移降到 `+7.3%`；相对同期插值对照，Decoder FTZ 只快 `0.7%`，VITS FTZ 慢 `4.0%`，全链 FTZ 慢 `2.3%`，关闭 VITS memory pattern 为 `0.0%`。所有档位语义与 PCM16 均一致，但没有候选达到 `3.0%` 准入线，四项全部淘汰。
+- 最终收口：正式移植只采用 CPU EP、intra-op `0`、inter-op `1`、顺序图、`ALL_OPT`、双 spinning 开启的原始自动核亲和；保留原 Decoder 循环、默认 memory pattern，不设置动态分块或 FTZ/DAZ，不请求 Android 长时稳态。该配置必须同时用于四个 TTS 会话和中文 RoBERTa。源码以 `VerifiedRuntimeConfig.AUTO_AFFINITY` 为唯一真源，并用单测锁定全部关键参数。
+- 范围：仍只生成 PCM、不创建 AudioTrack、不播放；不升级 ORT、不重开已失败的 XNNPACK/NNAPI，不修改模型、参考提示、采样和播放后处理。本轮只筛选将来可能移植到 AI 伴侣的推理配置。
+- 验证与交付：公开分支 `agent/v083-vits-denormal-memory-ab`、草稿 PR #15。GitHub Actions 第 50 次运行的 Kotlin 编译、全量单测、瘦 APK、安装门禁和完整 APK 封装均通过；封装作业从既有未发布草稿读取已验证的 v0.8.2 基线，不把私有模型写入 Git 历史。完整 APK `Genie-TTS-Android-v0.8.3-denormal-memory-optimization-test.apk` 为 355,802,570 字节，SHA-256 `452aab4b8e96f2a21380c4a1104a590d2abcf1683fe1e8c835cb47e75fdf1ae7`；15 个 CI 代码条目逐字节一致，49 个酒狐资源齐全，恬豆/乐奈/mao/旧 `benchmark` 条目为 0，ZIP、未压缩 `resources.arsc`、AArch64 ELF、4 字节/16 KiB zipalign、v2/v3 签名与证书 `a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc` 全部通过。APK 已上传到既有未发布 GitHub 草稿页；未合并 `main`，未发布正式 Release。
 
 ### v0.8.2 原始自动核亲和冻结对照与二阶段优化
 
@@ -19,6 +30,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 - 新优化档：`Decoder映射复用` 只消除自回归循环内反复创建输入 `LinkedHashMap` 与重复计算输出索引；`动态分块2/4/8` 在映射复用上分别加入 ORT `session.dynamic_block_base` 正整数试验。五档的模型、参考张量、文本、分段、采样和 PCM 输出路径保持一致。
 - 一键对比：固定运行“原始自动核亲和 → Decoder映射复用 → 动态分块2 → 动态分块4 → 动态分块8”，每档独立冷加载、连续生成同一 219 字/6 段中文基准且不播放；结束后一个按钮复制整套报告，逐段 token/哈希与音频时长继续作为正确性门禁。
 - 范围边界：本轮只继续优化最终将移植到 AI 伴侣的推理路径，不新增测试项目专属产品功能；最终默认配置必须由新 APK 至少两轮真机结果决定。
+- 真机结论：一次完整一键报告已足够淘汰该轮候选。映射复用只快 `0.1%`，远小于运行噪声；动态分块三档均回退 `2.2%～3.2%`。原始自动核亲和继续作为胜出基线，v0.8.3 不沿用任一候选。
 - 验证与交付：针对性 Kotlin/JUnit 7 项通过；公开分支 `agent/v082-auto-affinity-ab-optimization`、草稿 PR #14、首个远端源码提交 `1dc5f40`。GitHub Actions 第 47 次运行的打包工具语法、Android/Kotlin 编译、全量单测、瘦 APK、安装兼容门禁和两份构建产物上传全部通过。完整 APK `Genie-TTS-Android-v0.8.2-auto-affinity-optimization-test.apk` 为 355,798,671 字节，SHA-256 `355cacb1762bf19f2f530fd656a07008ec06845c6fc6bb6bd49860ab93a75a5f`；15 个 CI 非 META 代码条目逐字节一致，51 个 v0.8.1 基础条目保持一致，49 个酒狐资源条目齐全，恬豆/乐奈/mao/旧 `benchmark` 条目为 0。ZIP、未压缩 `resources.arsc`、AArch64 ELF、4 字节/16 KiB zipalign、v2/v3 签名与证书 `a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc` 全部通过；APK 已上传到仓库既有的未发布草稿页。未合并 `main`，未发布正式 Release。
 
 ### v0.8.1 五档连续性能对比与主线程修复
@@ -190,6 +202,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 | v0.8.0 | 增加五档一键单次短句对比、统一复制报告、单档失败继续与相对基准排名 |
 | v0.8.1 | 修复持续性能模式后台线程触窗崩溃；五档改为 219 字/6 段连续基准并推算无声播放缓冲连续性 |
 | v0.8.2 | 冻结 v0.8.1 原始自动核亲和胜出路径；一键对比 Decoder 映射复用及 ORT 动态分块 2/4/8 |
+| v0.8.3 | 首尾重复原始自动并线性插值；共同前处理/不计分热身；对比 Decoder/VITS FTZ/DAZ 与 VITS memory pattern |
 
 ## 真机测试基线
 

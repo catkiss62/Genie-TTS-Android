@@ -67,6 +67,20 @@ enum class GraphExecutionMode(val displayName: String) {
     PARALLEL("图并行"),
 }
 
+enum class DenormalTarget(val displayName: String) {
+    NONE("关闭"),
+    DECODERS("仅 Decoder"),
+    VOCODER("仅 VITS"),
+    ALL_TTS("全部 TTS 会话"),
+}
+
+enum class ModelSessionRole {
+    ENCODER,
+    FIRST_DECODER,
+    STAGE_DECODER,
+    VOCODER,
+}
+
 data class EngineConfig(
     val backend: BackendMode,
     val threads: Int,
@@ -75,11 +89,15 @@ data class EngineConfig(
     val allowSpinning: Boolean = true,
     val dynamicBlockBase: Int? = null,
     val reuseDecoderInputMap: Boolean = false,
+    val denormalTarget: DenormalTarget = DenormalTarget.NONE,
+    val vocoderMemoryPatternOptimization: Boolean = true,
     val sustainedPerformance: Boolean = false,
     val profileId: String = "legacy",
     val profileTitle: String = "自定义",
 ) {
     init {
+        require(threads >= 0) { "intra-op 线程数不能为负数；0 表示交给 ORT 自动建池/亲和" }
+        require(interOpThreads > 0) { "inter-op 线程数必须为正整数" }
         require(dynamicBlockBase == null || dynamicBlockBase > 0) { "动态分块系数必须为正整数" }
     }
 
@@ -96,10 +114,51 @@ data class EngineConfig(
             }
             val decoderLoop = if (reuseDecoderInputMap) " · Decoder映射复用" else " · Decoder原循环"
             val dynamicBlock = dynamicBlockBase?.let { " · 动态分块 $it" } ?: ""
+            val denormal = if (denormalTarget == DenormalTarget.NONE) "" else
+                " · FTZ/DAZ ${denormalTarget.displayName}"
+            val memoryPattern = if (vocoderMemoryPatternOptimization) "" else " · VITS内存模式关"
             val sustained = if (sustainedPerformance) " · Android长时稳态请求" else ""
             return "$profileTitle · $backendLabel · $graph · 线程忙等${if (allowSpinning) "开" else "关"}" +
-                "$decoderLoop$dynamicBlock$sustained"
+                "$decoderLoop$dynamicBlock$denormal$memoryPattern$sustained"
         }
+
+    fun flushDenormals(role: ModelSessionRole): Boolean = when (denormalTarget) {
+        DenormalTarget.NONE -> false
+        DenormalTarget.DECODERS -> role == ModelSessionRole.FIRST_DECODER ||
+            role == ModelSessionRole.STAGE_DECODER
+        DenormalTarget.VOCODER -> role == ModelSessionRole.VOCODER
+        DenormalTarget.ALL_TTS -> true
+    }
+}
+
+/**
+ * 真机反复验证后的正式移植配置。
+ *
+ * AI 伴侣接入时请整体复制这组参数，并同时用于：
+ * 1. T2S Encoder；2. 首步 Decoder；3. 自回归 Decoder；4. VITS；
+ * 5. 中文 Chinese RoBERTa（仅中文会创建）。
+ *
+ * 特别注意：threads=0 不是“未配置”，而是有意让 ONNX Runtime 按设备物理核
+ * 自动建立 intra-op 线程池并应用默认亲和策略。不要改成 availableProcessors()、
+ * 固定 8/6/4，也不要用 coerceAtLeast(1) 或 max(1, threads) 把 0 吞掉。
+ * v0.8.2/v0.8.3 的 Decoder 映射复用、动态分块、FTZ/DAZ 和关闭 VITS memory
+ * pattern 均未得到可复现收益，因此这里明确保持原始执行路径。
+ */
+object VerifiedRuntimeConfig {
+    val AUTO_AFFINITY = EngineConfig(
+        backend = BackendMode.CPU,
+        threads = 0,
+        interOpThreads = 1,
+        executionMode = GraphExecutionMode.SEQUENTIAL,
+        allowSpinning = true,
+        dynamicBlockBase = null,
+        reuseDecoderInputMap = false,
+        denormalTarget = DenormalTarget.NONE,
+        vocoderMemoryPatternOptimization = true,
+        sustainedPerformance = false,
+        profileId = "verified_auto_affinity",
+        profileTitle = "已验证自动核亲和",
+    )
 }
 
 enum class PerformanceProfile(
@@ -107,61 +166,64 @@ enum class PerformanceProfile(
     val description: String,
     val config: EngineConfig,
 ) {
-    AUTO_AFFINITY_ORIGINAL(
-        "原始自动核亲和",
-        "完整保留 v0.8.1 胜出路径：ORT 自动物理核/亲和、顺序图、忙等开启和原 Decoder 循环。",
-        EngineConfig(
-            BackendMode.CPU,
-            0,
-            profileId = "auto_affinity_original",
-            profileTitle = "原始自动核亲和",
+    AUTO_AFFINITY_CONTROL_START(
+        "原始自动（首轮）",
+        "完整保留 v0.8.1 胜出路径，作为测试开始端的冻结对照。",
+        VerifiedRuntimeConfig.AUTO_AFFINITY.copy(
+            profileId = "auto_affinity_control_start",
+            profileTitle = "原始自动（首轮）",
         ),
     ),
-    DECODER_MAP_REUSE(
-        "Decoder映射复用",
-        "保持原始自动核亲和，只复用近千次自回归调用的输入映射并预计算输出索引。",
+    DECODER_DENORMAL_ZERO(
+        "Decoder去次正规数",
+        "只为首步与自回归 Decoder 启用 FTZ/DAZ，检验极小浮点数是否拖慢自回归热循环。",
         EngineConfig(
             BackendMode.CPU,
             0,
-            reuseDecoderInputMap = true,
-            profileId = "decoder_map_reuse",
-            profileTitle = "Decoder映射复用",
+            denormalTarget = DenormalTarget.DECODERS,
+            profileId = "decoder_denormal_zero",
+            profileTitle = "Decoder去次正规数",
         ),
     ),
-    DYNAMIC_BLOCK_2(
-        "动态分块2",
-        "在 Decoder 映射复用上启用 ORT 动态任务分块系数 2，测试异构核心负载尾部。",
+    VITS_DENORMAL_ZERO(
+        "VITS去次正规数",
+        "只为 VITS 启用 FTZ/DAZ，直接测试当前耗时最大阶段；PCM16 哈希负责检查可播放输出。",
         EngineConfig(
             BackendMode.CPU,
             0,
-            dynamicBlockBase = 2,
-            reuseDecoderInputMap = true,
-            profileId = "dynamic_block_2",
-            profileTitle = "动态分块2",
+            denormalTarget = DenormalTarget.VOCODER,
+            profileId = "vits_denormal_zero",
+            profileTitle = "VITS去次正规数",
         ),
     ),
-    DYNAMIC_BLOCK_4(
-        "动态分块4",
-        "在 Decoder 映射复用上启用 ORT 动态任务分块系数 4；官方以 4 作为典型试验值。",
+    ALL_TTS_DENORMAL_ZERO(
+        "全链去次正规数",
+        "为 Encoder、两个 Decoder 和 VITS 全部启用 FTZ/DAZ，语义与 PCM16 一致性是硬门禁。",
         EngineConfig(
             BackendMode.CPU,
             0,
-            dynamicBlockBase = 4,
-            reuseDecoderInputMap = true,
-            profileId = "dynamic_block_4",
-            profileTitle = "动态分块4",
+            denormalTarget = DenormalTarget.ALL_TTS,
+            profileId = "all_tts_denormal_zero",
+            profileTitle = "全链去次正规数",
         ),
     ),
-    DYNAMIC_BLOCK_8(
-        "动态分块8",
-        "在 Decoder 映射复用上启用更细的 ORT 动态任务分块系数 8，检验收益是否继续扩大。",
+    VITS_NO_MEMORY_PATTERN(
+        "VITS关闭内存模式",
+        "只关闭 VITS 的 ORT memory pattern，检验连续变长波形是否因动态形状承担额外规划成本。",
         EngineConfig(
             BackendMode.CPU,
             0,
-            dynamicBlockBase = 8,
-            reuseDecoderInputMap = true,
-            profileId = "dynamic_block_8",
-            profileTitle = "动态分块8",
+            vocoderMemoryPatternOptimization = false,
+            profileId = "vits_no_memory_pattern",
+            profileTitle = "VITS关闭内存模式",
+        ),
+    ),
+    AUTO_AFFINITY_CONTROL_END(
+        "原始自动（末轮）",
+        "与首轮功能配置完全相同，用于测量整套测试期间的温控与系统漂移。",
+        VerifiedRuntimeConfig.AUTO_AFFINITY.copy(
+            profileId = "auto_affinity_control_end",
+            profileTitle = "原始自动（末轮）",
         ),
     ),
 }
@@ -273,7 +335,7 @@ data class BenchmarkResult(
     val playbackGainDb: Double, val pssMb: Int, val audio: FloatArray,
 ) {
     fun report(deviceLine: String, runNumber: Int? = null): String = buildString {
-        appendLine("Genie-TTS Android 小酒狐三语测试 v0.8.2")
+        appendLine("Genie-TTS Android 小酒狐三语测试 v0.8.3")
         appendLine(deviceLine)
         appendLine("配置：${config.label}${runNumber?.let { " · 第 ${it} 轮" } ?: ""}")
         appendLine("语言前端：$featureModeTitle")

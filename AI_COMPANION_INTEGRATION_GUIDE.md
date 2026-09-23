@@ -1,12 +1,65 @@
 # Genie-TTS → AI Companion 接入指南
 
-状态：v0.6.4 是模型与播放的历史收口基线；v0.7.0 增加 LLM 真流式联调；v0.7.1 增加后续积压短句拼合与单 AudioTrack 连续播放；v0.7.4 加入小酒狐 V2Pro 三语与酒狐专属播放调节；v0.7.5 增加 `0～-10 dB` 连续高频柔化；v0.7.6 将酒狐扩展为四条独立参考；v0.7.7 从当前运行时与 APK 中移除恬豆，只保留小酒狐，并让约 1000 字长文本与真流式联调采用 AI 伴侣沉浸房间的分段策略；v0.8.1 真机确认 ORT 自动核亲和较固定 8 线程快约 54%，v0.8.2 正在以原始自动核亲和为冻结对照继续筛选 Decoder 热循环优化。测试引擎基于 Genie-TTS v2.0.2、GPT-SoVITS V2Pro 权重和 Android ONNX Runtime。
+状态：v0.6.4 是模型与播放的历史收口基线；v0.7.0 增加 LLM 真流式联调；v0.7.1 增加后续积压短句拼合与单 AudioTrack 连续播放；v0.7.4 加入小酒狐 V2Pro 三语与酒狐专属播放调节；v0.7.5 增加 `0～-10 dB` 连续高频柔化；v0.7.6 将酒狐扩展为四条独立参考；v0.7.7 从当前运行时与 APK 中移除恬豆，只保留小酒狐，并让约 1000 字长文本与真流式联调采用 AI 伴侣沉浸房间的分段策略；v0.8.1 真机确认 ORT 自动核亲和较固定 8 线程快约 54%；v0.8.2 的映射复用与动态分块均未获得有效收益；v0.8.3 的 FTZ/DAZ 与 VITS memory pattern 候选复测也没有可复现收益。最终性能收口为“原始自动核亲和”。测试引擎基于 Genie-TTS v2.0.2、GPT-SoVITS V2Pro 权重和 Android ONNX Runtime 1.22.0。
 
 本文件面向后续接手 AI 伴侣项目的开发者或 AI。详细实验历史、失败路线和性能数据见 [PROJECT_LEDGER.md](PROJECT_LEDGER.md)。
 
 ## 一句话接入原则
 
 保留 AI 伴侣现有的 Dart `TtsPlaybackQueue` 和 19 种 `CompanionEmotion`，把本项目的前端、ONNX 推理与 AudioTrack 播放封装成新的本地 `TtsProvider`；语言和音色在每次回复开始时确定一次，整条回复的所有分段保持一致。
+
+## 已验证自动核亲和：必须整体移植
+
+唯一正式配置真源是 `BenchmarkModels.kt` 的 `VerifiedRuntimeConfig.AUTO_AFFINITY`。不要从 v0.8.2/v0.8.3 的实验枚举中任选一个“看起来更优化”的档位。
+
+| 项目 | 最终值 | 移植注意 |
+|---|---|---|
+| Execution Provider | CPU EP | 不启用 XNNPACK 或 NNAPI |
+| intra-op threads | `0` | 这是关键值；原样传给 ORT，禁止改成逻辑核数或钳制到至少 1 |
+| inter-op threads | `1` | 不做图间并行 |
+| execution mode | `SEQUENTIAL` | 不使用 `PARALLEL` |
+| graph optimization | `ALL_OPT` | 四个 TTS 会话与中文 RoBERTa 一致 |
+| intra/inter spinning | `1` / `1` | 两个配置项都保留 |
+| dynamic block | 不设置 | v0.8.2 的 2/4/8 均无收益 |
+| Decoder 输入映射复用 | 关闭 | 保留原 Decoder 循环 |
+| FTZ/DAZ | 不设置 | 不添加 `session.set_denormal_as_zero` |
+| VITS memory pattern | 保持默认开启 | 不调用 `setMemoryPatternOptimization(false)` |
+| Android sustained mode | 不请求 | 目标设备不支持，实验也无收益 |
+
+以下五个 ONNX 会话都必须使用这组设置，少一个都不算完整移植：
+
+1. T2S Encoder；
+2. 首步 Decoder；
+3. 自回归 Stage Decoder；
+4. VITS；
+5. Chinese RoBERTa（仅中文模式创建）。
+
+建议在 AI 伴侣 Android 原生层保留一个唯一工厂，所有会话都从这里创建：
+
+```kotlin
+private fun createVerifiedCpuSession(modelPath: String): OrtSession {
+    val options = OrtSession.SessionOptions().apply {
+        // 0 不是“未配置”：它让 ORT 自动建 intra-op 池并采用默认核亲和。
+        // 不要替换成 availableProcessors()，也不要 max/coerceAtLeast(1)。
+        setIntraOpNumThreads(0)
+        setInterOpNumThreads(1)
+        setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
+        setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+        addConfigEntry("session.intra_op.allow_spinning", "1")
+        addConfigEntry("session.inter_op.allow_spinning", "1")
+
+        // 有意不设置 dynamic_block_base、set_denormal_as_zero；
+        // 有意保留默认 memory pattern。
+    }
+    return try {
+        OrtEnvironment.getEnvironment().createSession(modelPath, options)
+    } finally {
+        options.close()
+    }
+}
+```
+
+会话应在模型加载时各创建一次，之后由单一串行推理 worker 长期复用；不能每句重建，也不能并发运行同一组会话。`threads=0` 只负责 ORT 的线程池与核亲和，不涉及 root、系统 governor、CPU 频率或真正意义上的硬件超频。
 
 ## 需要移植的源码
 
@@ -114,7 +167,10 @@ RTF 略大于 1 时，任意长度都不能数学上保证完全无停顿。首�
 
 ## 已验证边界
 
-- 目标设备的两轮 v0.8.1 连续测试中，ORT 自动物理核/亲和的聚合 RTF 为 1.038 和 0.949，相对同轮固定 8 线程均快约 54%；移植时应以自动核亲和为当前性能基线。v0.8.2 的 Decoder 映射复用和动态分块仍需真机复测后才能取代它。
+- 目标设备的两轮 v0.8.1 连续测试中，ORT 自动物理核/亲和的聚合 RTF 为 1.038 和 0.949，相对同轮固定 8 线程均快约 54%；移植时应以自动核亲和为当前性能基线。
+- v0.8.2 真机一键结果中，Decoder 映射复用只快 0.1%，动态分块 2/4/8 慢 3.1%/2.2%/3.2%；这些方案均不得移植。
+- v0.8.3 首次测试的首尾原始对照漂移达到 17.4%，候选结果不具备判定价值；手机冷却后的复测漂移降到 7.3%，Decoder FTZ 仅快 0.7%，VITS FTZ 慢 4.0%，全链 FTZ 慢 2.3%，关闭 VITS memory pattern 为 0.0%。全部语义与 PCM16 一致，但没有候选达到至少 3.0% 的准入线，因此全部淘汰。
+- 性能最终结论：以 `VerifiedRuntimeConfig.AUTO_AFFINITY` 为唯一移植基线；除非未来用相同首尾对照方法得到至少两轮可复现结果，否则不要修改这组参数。
 - XNNPACK 曾生成异常短音频，NNAPI VITS 未获得收益，不要在正式接入时重新默认启用。
 - 中文必须使用非零 Chinese RoBERTa；全零 BERT 虽不报错，但会明显损害声调和问句语气。
 - v0.6.2 日文 523 字符测试：80.36 秒音频、聚合 RTF 1.063、温控始终正常；用户只感知到一次较长等待，整体听感通过。
@@ -133,8 +189,9 @@ RTF 略大于 1 时，任意长度都不能数学上保证完全无停顿。首�
 
 ## 最小验收顺序
 
-1. 固定 `daily`，分别验证中文、英文、日文短句。
-2. 固定 `daily`，验证中文约 500 字分段播放与打断。
-3. 依次固定 `gentle`、`lively`、`cute`，确认设置覆盖情绪映射。
-4. 开启 `auto`，用 19 种情绪标签做映射单元测试；无需为每种情绪都跑完整长音频。
-5. 用真实 DeepSeek 流式回复测试普通对话和约 1000 字长对话，记录首句等待、队列深度、累计 underrun 与峰值内存。
+1. 用代码断言五个 ONNX 会话均为 CPU EP、intra-op `0`、inter-op `1`、顺序图、`ALL_OPT` 和双 spinning；确认没有实验配置项。
+2. 固定 `daily`，分别验证中文、英文、日文短句。
+3. 固定 `daily`，验证中文约 500 字分段播放与打断。
+4. 依次固定 `gentle`、`lively`、`cute`，确认设置覆盖情绪映射。
+5. 开启 `auto`，用 19 种情绪标签做映射单元测试；无需为每种情绪都跑完整长音频。
+6. 用真实 DeepSeek 流式回复测试普通对话和约 1000 字长对话，记录首句等待、队列深度、累计 underrun 与峰值内存。

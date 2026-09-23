@@ -13,7 +13,9 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
     private val env = OrtEnvironment.getEnvironment()
     private var robertaSession: OrtSession? = null
     private var robertaPath: String? = null
-    private var engineConfig = PerformanceProfile.AUTO_AFFINITY_ORIGINAL.config
+    // 中文 RoBERTa 必须和四个 TTS 会话使用同一套已验证调度参数。
+    // 正式 AI 伴侣不能只移植声学模型的自动核亲和而漏掉这个会话。
+    private var engineConfig = VerifiedRuntimeConfig.AUTO_AFFINITY
     private var robertaConfig: EngineConfig? = null
     private var vocab: Map<String, Long>? = null
     private var charPhones: Map<String, List<LongArray>>? = null
@@ -359,7 +361,8 @@ class ChineseFrontend(private val engine: GenieBenchmarkEngine) : AutoCloseable 
             closeModel()
             val options = OrtSession.SessionOptions().apply {
                 setInterOpNumThreads(max(1, engineConfig.interOpThreads))
-                setIntraOpNumThreads(engineConfig.threads.coerceAtLeast(0))
+                // threads=0 有明确语义：交给 ORT 自动建池/亲和，不能钳制为至少 1。
+                setIntraOpNumThreads(engineConfig.threads)
                 setExecutionMode(
                     when (engineConfig.executionMode) {
                         GraphExecutionMode.SEQUENTIAL -> OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL

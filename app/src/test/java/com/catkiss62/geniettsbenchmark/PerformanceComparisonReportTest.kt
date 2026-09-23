@@ -8,21 +8,23 @@ class PerformanceComparisonReportTest {
     @Test
     fun reportContainsEveryProfileAndRanksByAggregateRtf() {
         val entries = PerformanceProfile.entries.mapIndexed { index, profile ->
-            entry(profile, rtf = listOf(1.0, 0.7, 0.9, 1.2, 0.8)[index])
+            entry(profile, rtf = listOf(1.0, 0.7, 0.9, 1.2, 0.8, 1.1)[index])
         }
         val report = report(entries).render()
 
         PerformanceProfile.entries.forEach { assertTrue(report.contains(it.title)) }
-        assertTrue(report.contains("1. Decoder映射复用：聚合 RTF 0.700"))
-        assertTrue(report.contains("比原始自动快 30.0%"))
+        assertTrue(report.contains("1. Decoder去次正规数：聚合 RTF 0.700"))
+        assertTrue(report.contains("比同期插值对照快 31.4%"))
         assertTrue(report.contains("只生成 PCM 数据，不创建 AudioTrack、不播放"))
         assertTrue(report.contains("逐段语义序列一致：是"))
+        assertTrue(report.contains("逐段播放级 PCM16 一致：是"))
+        assertTrue(report.contains("达到候选门槛（≥3.0% 且语义/PCM16一致）"))
         assertTrue(report.contains("纯推理对比，不是 AudioTrack underrun 实测"))
     }
 
     @Test
     fun simulatedContinuityUsesSegmentReadyTimesWithoutPlaying() {
-        val entry = entry(PerformanceProfile.AUTO_AFFINITY_ORIGINAL, rtf = 1.0)
+        val entry = entry(PerformanceProfile.AUTO_AFFINITY_CONTROL_START, rtf = 1.0)
 
         assertEquals(listOf(500L), entry.simulatedBufferMarginsMs)
         assertEquals(500L, entry.minSimulatedBufferMarginMs)
@@ -40,8 +42,8 @@ class PerformanceComparisonReportTest {
 
     @Test
     fun reportFlagsPerSegmentSemanticMismatch() {
-        val baseline = entry(PerformanceProfile.AUTO_AFFINITY_ORIGINAL, rtf = 1.0)
-        val changed = entry(PerformanceProfile.DECODER_MAP_REUSE, rtf = 0.8).let { entry ->
+        val baseline = entry(PerformanceProfile.AUTO_AFFINITY_CONTROL_START, rtf = 1.0)
+        val changed = entry(PerformanceProfile.DECODER_DENORMAL_ZERO, rtf = 0.8).let { entry ->
             entry.copy(
                 segments = entry.segments.mapIndexed { index, segment ->
                     if (index == 1) segment.copy(semanticHash = "different") else segment
@@ -55,16 +57,33 @@ class PerformanceComparisonReportTest {
     }
 
     @Test
+    fun pcm16MismatchDisqualifiesOtherwiseFastCandidate() {
+        val start = entry(PerformanceProfile.AUTO_AFFINITY_CONTROL_START, rtf = 1.0)
+        val candidate = entry(PerformanceProfile.VITS_DENORMAL_ZERO, rtf = 0.8).let { entry ->
+            entry.copy(
+                segments = entry.segments.mapIndexed { index, segment ->
+                    if (index == 0) segment.copy(pcm16Hash = "different") else segment
+                },
+            )
+        }
+        val end = entry(PerformanceProfile.AUTO_AFFINITY_CONTROL_END, rtf = 1.0)
+
+        val rendered = report(listOf(start, candidate, end)).render()
+        assertTrue(rendered.contains("逐段播放级 PCM16 一致：否"))
+        assertTrue(rendered.contains("达到候选门槛（≥3.0% 且语义/PCM16一致）：无"))
+    }
+
+    @Test
     fun failedProfileIsRecordedWithoutDroppingSuccessfulResults() {
         val failure = SingleRunPerformanceFailure(
-            PerformanceProfile.DYNAMIC_BLOCK_4,
+            PerformanceProfile.ALL_TTS_DENORMAL_ZERO,
             sustainedPerformanceApplied = false,
             thermalBefore = "正常",
             thermalAfter = "正常",
             error = "测试异常",
         )
         val rendered = report(
-            listOf(entry(PerformanceProfile.AUTO_AFFINITY_ORIGINAL, rtf = 1.0)),
+            listOf(entry(PerformanceProfile.AUTO_AFFINITY_CONTROL_START, rtf = 1.0)),
             failures = listOf(failure),
         ).render()
         assertTrue(rendered.contains("结果：失败，但已继续测试后续档位"))
@@ -75,7 +94,7 @@ class PerformanceComparisonReportTest {
         entries: List<SingleRunPerformanceEntry>,
         failures: List<SingleRunPerformanceFailure> = emptyList(),
     ) = PerformanceComparisonReport(
-        version = "0.8.2",
+        version = "0.8.3",
         timestamp = "2026-09-21 03:00:00",
         deviceLine = "测试设备",
         voicePackageTitle = "小酒狐",
@@ -83,6 +102,8 @@ class PerformanceComparisonReportTest {
         text = "第一句。第二句。",
         plannedSegments = listOf("第一句。", "第二句。"),
         sustainedPerformanceSupported = true,
+        sharedFrontendMs = 120,
+        warmupInferenceMs = 800,
         entries = entries,
         failures = failures,
     )
@@ -125,6 +146,7 @@ class PerformanceComparisonReportTest {
         audioPeak = 0.5,
         audioRms = 0.1,
         clippedPercent = 0.0,
+        pcm16Hash = "pcm-$index",
         pssMb = 1024,
     )
 }

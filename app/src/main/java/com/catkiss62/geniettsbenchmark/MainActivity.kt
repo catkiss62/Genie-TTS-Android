@@ -152,7 +152,7 @@ class MainActivity : Activity() {
     private lateinit var stopButton: Button
     private lateinit var pageScroll: ScrollView
     private val worker = Executors.newSingleThreadExecutor()
-    private var currentPerformanceProfile = PerformanceProfile.AUTO_AFFINITY_ORIGINAL
+    private var currentPerformanceProfile = PerformanceProfile.AUTO_AFFINITY_CONTROL_START
     private var config = currentPerformanceProfile.config
     private val performanceProfileButtons = linkedMapOf<PerformanceProfile, Button>()
     private var currentVoicePackage = VoicePackageCatalog.all.first()
@@ -218,7 +218,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 243, 255))
         }
         content.addView(TextView(this).apply {
-            text = "Genie-TTS v2.0.2\n小酒狐 Android 三语性能联调 v0.8.2"
+            text = "Genie-TTS v2.0.2\n小酒狐 Android 三语性能联调 v0.8.3"
             textSize = 22f
             setTextColor(Color.rgb(50, 37, 86))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
@@ -336,7 +336,7 @@ class MainActivity : Activity() {
         }
         addView(performanceProfileDescription)
         addView(TextView(this@MainActivity).apply {
-            text = "第一档完整保留 v0.8.1 原始自动核亲和；其余档只逐步加入 Decoder 映射复用与 ORT 动态分块，不改变模型、参考张量、采样参数或音频后处理。"
+            text = "首尾两档完整保留原始自动核亲和；中间只分别测试 Decoder/VITS 的 FTZ/DAZ 与 VITS 内存模式，不改变模型、参考张量、采样或播放后处理。"
             textSize = 11f
             setTextColor(Color.GRAY)
         })
@@ -687,8 +687,8 @@ class MainActivity : Activity() {
                 bottomMargin = dp(8)
             })
 
-            addButton("一键运行原始自动与四优化档（不播放）") { runSinglePerformanceComparison() }
-            addButton("复制自动核亲和优化对比报告") { copyPerformanceComparisonReport() }
+            addButton("一键运行首尾对照与四优化档（不播放）") { runSinglePerformanceComparison() }
+            addButton("复制浮点/内存优化对比报告") { copyPerformanceComparisonReport() }
             addButton("运行自动诊断（当前档，不播放）") { runDiagnostic() }
             addButton("复制诊断报告") { copyDiagnosticReport() }
             stopButton = addButton("停止当前任务") {
@@ -820,7 +820,7 @@ class MainActivity : Activity() {
             appendLine("启动后台预热：已禁用（恢复 v0.5.0 中文路径）")
             appendLine("英文前端：${if (englishFrontend == null) "未加载" else "已按需加载"} · 日文前端：${if (japaneseFrontend == null) "未加载" else "已按需加载"}")
             appendLine("上次合成：${lastResultLabel ?: "无"}")
-            appendLine("自动核亲和优化对比报告：${if (performanceComparisonReport.isBlank()) "无" else "已生成，可直接复制"}")
+            appendLine("浮点/内存优化对比报告：${if (performanceComparisonReport.isBlank()) "无" else "已生成，可直接复制"}")
             appendLine("上一次长文本报告：$longStreamReportLabel")
             appendLine("上一次流式联调报告：$dialogueReportLabel")
             appendLine("DeepSeek API Key：${if (apiKeyStore.loadApiKey() == null) "未保存" else "已在本机加密保存"}")
@@ -1101,7 +1101,7 @@ class MainActivity : Activity() {
             val thermalAtEnd = thermalStatus()
 
             longStreamReport = buildString {
-                appendLine("===== Genie-TTS v0.8.2 小酒狐${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.8.3 小酒狐${test.language.title}长文本分段流式报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("音色：${item.displayTitle} · ${config.label}")
                 appendLine("Android 持续性能模式：${sustainedPerformanceStatus()}")
@@ -1165,7 +1165,7 @@ class MainActivity : Activity() {
     private fun copyDialogueReport() {
         if (dialogueReport.isBlank()) return showCurrent("请先完成或中断一次流式联调测试。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.8.2", dialogueReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS dialogue stream v0.8.3", dialogueReport))
         showCurrent("上一次流式联调报告已复制：$dialogueReportLabel")
     }
 
@@ -1457,7 +1457,7 @@ class MainActivity : Activity() {
             val aggregateRtf = totalCoreMs / (totalAudioSeconds * 1000.0)
 
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.8.2 小酒狐流式对话联调报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.8.3 小酒狐流式对话联调报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
                 appendLine("音色：${item.displayTitle} · ${config.label}")
@@ -1507,7 +1507,7 @@ class MainActivity : Activity() {
                 (cancelAppliedNs - cancelRequestedNs) / 1_000_000L
             } else null
             dialogueReport = buildString {
-                appendLine("===== Genie-TTS v0.8.2 小酒狐流式对话中断报告 · ${timeStamp()} =====")
+                appendLine("===== Genie-TTS v0.8.3 小酒狐流式对话中断报告 · ${timeStamp()} =====")
                 appendLine(deviceLine())
                 append(performanceReportLine())
                 appendLine("来源：${source.title} · 模式：${lengthMode.title} · TTS：${language.title}")
@@ -1626,7 +1626,7 @@ class MainActivity : Activity() {
             .filter { (label, _) -> label.startsWith("热推理") }
             .map { it.second }
         diagnosticReport = buildString {
-            appendLine("===== Genie-TTS v0.8.2 小酒狐自动诊断 · ${timeStamp()} =====")
+            appendLine("===== Genie-TTS v0.8.3 小酒狐自动诊断 · ${timeStamp()} =====")
             appendLine(deviceLine())
             append(performanceReportLine())
             appendLine("固定音色：${primary.displayTitle} · ${currentVoicePackage.title}")
@@ -1646,12 +1646,12 @@ class MainActivity : Activity() {
         postStatus("自动诊断完成，共 ${results.size} 项。点击“复制诊断报告”发送给我即可。")
     }
 
-    private fun runSinglePerformanceComparison() = runTask("自动核亲和优化对比") {
+    private fun runSinglePerformanceComparison() = runTask("浮点/内存优化对比") {
         performanceComparisonReport = ""
         engine.stopPlayback()
         val root = ensureAssets()
         check(engine.hasFrontendModel(root)) {
-            "自动核亲和优化对比需要配套的中文 RoBERTa；请先用页面顶部按钮导入模型"
+            "浮点/内存优化对比需要配套的中文 RoBERTa；请先用页面顶部按钮导入模型"
         }
         engine.prepareFrontendAssets(root, ::postStatus)
         val item = currentCase()
@@ -1662,24 +1662,64 @@ class MainActivity : Activity() {
         val entries = mutableListOf<SingleRunPerformanceEntry>()
         val failures = mutableListOf<SingleRunPerformanceFailure>()
         val profiles = PerformanceProfile.entries
-        val totalSteps = profiles.size * segments.size
+        val measuredSteps = profiles.size * segments.size
+        val preparationSteps = segments.size + 1
+        val totalSteps = preparationSteps + measuredSteps
 
         engine.unloadModels()
         frontend.closeModel()
         frontend.clearPreparedCache()
         try {
-            profiles.forEachIndexed { profileIndex, profile ->
+            config = PerformanceProfile.AUTO_AFFINITY_CONTROL_START.config
+            frontend.configure(config)
+            val sharedFrontendStartedNs = System.nanoTime()
+            val preparedSegments = segments.mapIndexed { index, text ->
                 checkCancelled()
                 postProgress(
-                    profileIndex * segments.size,
+                    index,
+                    totalSteps,
+                    "共同准备 · 第 ${index + 1}/${segments.size} 段中文前处理（不计入档位）……",
+                )
+                frontend.prepare(root, text, ::postStatus).let { prepared ->
+                    prepared.copy(
+                        frontendMs = 0L,
+                        diagnostic = "共同预计算；不计入单档 · ${prepared.diagnostic}",
+                    )
+                }
+            }
+            val sharedFrontendMs =
+                (System.nanoTime() - sharedFrontendStartedNs) / 1_000_000L
+
+            checkCancelled()
+            postProgress(
+                segments.size,
+                totalSteps,
+                "共同准备 · 原始自动核亲和运行一段不计分热身……",
+            )
+            val warmupConfig = PerformanceProfile.AUTO_AFFINITY_CONTROL_START.config
+            val warmupLoad = engine.loadModels(root, warmupConfig)
+            val warmupInferenceMs = engine.runPrepared(
+                root = root,
+                case = item,
+                prepared = preparedSegments.first(),
+                modelLoad = warmupLoad,
+                requestStartedNs = System.nanoTime(),
+                targetTitle = "不计分热身",
+                shouldCancel = { cancelRequested },
+            ).totalInferenceMs
+            engine.unloadModels()
+            System.gc()
+
+            profiles.forEachIndexed { profileIndex, profile ->
+                checkCancelled()
+                val profileStepBase = preparationSteps + profileIndex * segments.size
+                postProgress(
+                    profileStepBase,
                     totalSteps,
                     "正在运行 ${profile.title}：冷加载模型并连续生成 ${segments.size} 段……",
                 )
                 engine.unloadModels()
-                frontend.closeModel()
-                frontend.clearPreparedCache()
                 config = profile.config
-                frontend.configure(profile.config)
                 var sustainedApplied = false
                 var thermalBefore = thermalStatus()
                 try {
@@ -1690,12 +1730,11 @@ class MainActivity : Activity() {
                     segments.forEachIndexed { segmentIndex, text ->
                         checkCancelled()
                         postProgress(
-                            profileIndex * segments.size + segmentIndex,
+                            profileStepBase + segmentIndex,
                             totalSteps,
-                            "${profile.title} · 第 ${segmentIndex + 1}/${segments.size} 段：中文前处理与推理……",
+                            "${profile.title} · 第 ${segmentIndex + 1}/${segments.size} 段：连续推理……",
                         )
                         val segmentStartedNs = System.nanoTime()
-                        val prepared = frontend.prepare(root, text, ::postStatus)
                         val modelLoad = engine.loadModels(root, profile.config)
                         if (segmentIndex == 0) {
                             check(modelLoad.loadedThisRun) { "${profile.title} 未执行独立冷加载" }
@@ -1705,7 +1744,7 @@ class MainActivity : Activity() {
                         val result = engine.runPrepared(
                             root = root,
                             case = item,
-                            prepared = prepared,
+                            prepared = preparedSegments[segmentIndex],
                             modelLoad = modelLoad,
                             requestStartedNs = segmentStartedNs,
                             targetTitle = "连续基准第 ${segmentIndex + 1} 段",
@@ -1728,7 +1767,7 @@ class MainActivity : Activity() {
                         segments = segmentEntries,
                     )
                     postProgress(
-                        (profileIndex + 1) * segments.size,
+                        profileStepBase + segments.size,
                         totalSteps,
                         "${profile.title} 连续分段完成；不播放，继续下一档。",
                     )
@@ -1743,19 +1782,17 @@ class MainActivity : Activity() {
                         error = error.stackTraceToString().lineSequence().take(12).joinToString("\n"),
                     )
                     postProgress(
-                        (profileIndex + 1) * segments.size,
+                        profileStepBase + segments.size,
                         totalSteps,
                         "${profile.title} 失败，已记录错误并继续下一档。",
                     )
                 } finally {
                     engine.unloadModels()
-                    frontend.closeModel()
-                    frontend.clearPreparedCache()
                 }
             }
 
             performanceComparisonReport = PerformanceComparisonReport(
-                version = "0.8.2",
+                version = "0.8.3",
                 timestamp = timeStamp(),
                 deviceLine = deviceLine(),
                 voicePackageTitle = currentVoicePackage.title,
@@ -1763,6 +1800,8 @@ class MainActivity : Activity() {
                 text = comparisonText,
                 plannedSegments = segments,
                 sustainedPerformanceSupported = sustainedPerformanceSupported(),
+                sharedFrontendMs = sharedFrontendMs,
+                warmupInferenceMs = warmupInferenceMs,
                 entries = entries,
                 failures = failures,
             ).render()
@@ -1770,8 +1809,8 @@ class MainActivity : Activity() {
                 "当前最快：${fastest.profile.title}，聚合 RTF ${"%.3f".format(fastest.coreRtf)}。"
             } ?: "所有档位均未成功，请复制报告中的错误。"
             postStatus(
-                "原始自动与四优化档连续对比完成，全程未播放；成功 ${entries.size} 档、失败 ${failures.size} 档。" +
-                    "$summary 点击“复制自动核亲和优化对比报告”把整套结果发给我。"
+                "首尾对照与四个浮点/内存优化档完成，全程未播放；成功 ${entries.size} 档、失败 ${failures.size} 档。" +
+                    "$summary 点击“复制浮点/内存优化对比报告”把整套结果发给我。"
             )
         } finally {
             engine.unloadModels()
@@ -1827,30 +1866,30 @@ class MainActivity : Activity() {
     private fun copyDiagnosticReport() {
         if (diagnosticReport.isBlank()) return showCurrent("请先运行一次自动诊断。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.8.2", diagnosticReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS diagnostic v0.8.3", diagnosticReport))
         showCurrent("自动诊断报告已复制。")
     }
 
     private fun copyPerformanceComparisonReport() {
-        if (performanceComparisonReport.isBlank()) return showCurrent("请先运行一次自动核亲和优化连续对比。")
+        if (performanceComparisonReport.isBlank()) return showCurrent("请先运行一次浮点/内存优化连续对比。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(
-            ClipData.newPlainText("Genie TTS auto-affinity optimization comparison v0.8.2", performanceComparisonReport)
+            ClipData.newPlainText("Genie TTS denormal and memory comparison v0.8.3", performanceComparisonReport)
         )
-        showCurrent("自动核亲和优化对比报告已整套复制。")
+        showCurrent("浮点/内存优化对比报告已整套复制。")
     }
 
     private fun copyLastResultReport() {
         if (lastResultReport.isBlank()) return showCurrent("请先生成一次中文、英语或日语结果。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.8.2", lastResultReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS result v0.8.3", lastResultReport))
         showCurrent("上次合成报告已复制。")
     }
 
     private fun copyLongStreamReport() {
         if (longStreamReport.isBlank()) return showCurrent("请先运行一次中文、英文或日文长文本试听。")
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.8.2", longStreamReport))
+        clipboard.setPrimaryClip(ClipData.newPlainText("Genie TTS long stream v0.8.3", longStreamReport))
         showCurrent("上一次长文本报告已复制：$longStreamReportLabel")
     }
 
