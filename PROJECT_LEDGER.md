@@ -19,6 +19,7 @@ v0.6.1 的中文 505 字长文本真机回归失败：聚合 RTF 2.475、15/15 �
 - 公平性修正：六档按“原始首轮 → 四候选 → 原始末轮”固定执行。开始前把 219 字/6 段中文特征共同预计算一次，并用原始档跑一段不计分热身；测量时每档仍独立冷加载四个 TTS 会话。候选相对速度按其位置对首尾原始 RTF 线性插值，不再让首档独自承担 RoBERTa 懒初始化，也可量化测试期间的热漂移。
 - 判定：报告逐段记录 token/语义哈希与 PCM16 哈希；候选相对同期插值对照至少快 `3.0%` 且两种输出签名一致才进入下一轮。首尾原始对照漂移绝对值达到 `5%` 时，报告明确提示冷却后复测。
 - 范围：仍只生成 PCM、不创建 AudioTrack、不播放；不升级 ORT、不重开已失败的 XNNPACK/NNAPI，不修改模型、参考提示、采样和播放后处理。本轮只筛选将来可能移植到 AI 伴侣的推理配置。
+- 验证与交付：公开分支 `agent/v083-vits-denormal-memory-ab`、草稿 PR #15。GitHub Actions 第 50 次运行的 Kotlin 编译、全量单测、瘦 APK、安装门禁和完整 APK 封装均通过；封装作业从既有未发布草稿读取已验证的 v0.8.2 基线，不把私有模型写入 Git 历史。完整 APK `Genie-TTS-Android-v0.8.3-denormal-memory-optimization-test.apk` 为 355,802,570 字节，SHA-256 `452aab4b8e96f2a21380c4a1104a590d2abcf1683fe1e8c835cb47e75fdf1ae7`；15 个 CI 代码条目逐字节一致，49 个酒狐资源齐全，恬豆/乐奈/mao/旧 `benchmark` 条目为 0，ZIP、未压缩 `resources.arsc`、AArch64 ELF、4 字节/16 KiB zipalign、v2/v3 签名与证书 `a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc` 全部通过。APK 已上传到既有未发布 GitHub 草稿页；未合并 `main`，未发布正式 Release。
 
 ### v0.8.2 原始自动核亲和冻结对照与二阶段优化
 
